@@ -25,12 +25,6 @@ def upgrade() -> None:
     node_status = sa.Enum("provisioning", "active", "degraded", "draining", "disabled", name="node_status")
     assignment_status = sa.Enum("active", "inactive", name="assignment_status")
 
-    bind = op.get_bind()
-    user_status.create(bind, checkfirst=True)
-    node_role.create(bind, checkfirst=True)
-    node_status.create(bind, checkfirst=True)
-    assignment_status.create(bind, checkfirst=True)
-
     op.create_table(
         "users",
         sa.Column("id", postgresql.UUID(as_uuid=True), primary_key=True, nullable=False, server_default=sa.text("gen_random_uuid()")),
@@ -116,14 +110,3 @@ def downgrade() -> None:
     op.drop_table("node_assignments")
     op.drop_table("nodes")
     op.drop_table("users")
-
-    assignment_status = sa.Enum("active", "inactive", name="assignment_status")
-    node_status = sa.Enum("provisioning", "active", "degraded", "draining", "disabled", name="node_status")
-    node_role = sa.Enum("control", "worker", name="node_role")
-    user_status = sa.Enum("active", "disabled", name="user_status")
-
-    bind = op.get_bind()
-    assignment_status.drop(bind, checkfirst=True)
-    node_status.drop(bind, checkfirst=True)
-    node_role.drop(bind, checkfirst=True)
-    user_status.drop(bind, checkfirst=True)

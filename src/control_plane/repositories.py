@@ -145,7 +145,7 @@ def add_audit_event(
         action=action,
         entity_type=entity_type,
         entity_id=entity_id,
-        metadata=metadata or {},
+        audit_metadata=metadata or {},
     )
     session.add(event)
     session.flush()
