@@ -1,0 +1,9 @@
+[
+  {
+    "name": "connect-worker-uk-1",
+    "host": "uk1.example.com",
+    "port": 443,
+    "path": "/",
+    "enabled": true
+  }
+]

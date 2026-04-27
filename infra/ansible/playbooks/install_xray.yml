@@ -1,0 +1,40 @@
+---
+- name: Install and configure Xray
+  hosts: workers_uk
+  become: true
+  vars:
+    generated_config_path: "{{ playbook_dir }}/../../generated/xray/{{ inventory_hostname }}.json"
+  tasks:
+    - name: Download official install script
+      ansible.builtin.get_url:
+        url: https://github.com/XTLS/Xray-install/raw/main/install-release.sh
+        dest: /tmp/install-release.sh
+        mode: "0755"
+
+    - name: Install Xray
+      ansible.builtin.command: /tmp/install-release.sh
+      changed_when: true
+
+    - name: Check generated Xray config on controller
+      ansible.builtin.stat:
+        path: "{{ generated_config_path }}"
+      become: false
+      delegate_to: localhost
+      register: generated_xray_config
+
+    - name: Stop if generated config is missing
+      ansible.builtin.fail:
+        msg: "Missing generated config: {{ generated_config_path }}. Run scripts/render-xray-node-configs.sh first."
+      when: not generated_xray_config.stat.exists
+
+    - name: Deploy generated Xray config
+      ansible.builtin.copy:
+        src: "{{ generated_config_path }}"
+        dest: /usr/local/etc/xray/config.json
+        mode: "0644"
+
+    - name: Enable and restart Xray
+      ansible.builtin.systemd:
+        name: xray
+        enabled: true
+        state: restarted

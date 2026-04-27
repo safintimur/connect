@@ -1,0 +1,75 @@
+---
+- name: Deploy control runtime on control hosts
+  hosts: control
+  become: true
+  tasks:
+    - name: Install control runtime packages
+      ansible.builtin.package:
+        name:
+          - ca-certificates
+          - docker.io
+          - docker-compose-plugin
+        state: present
+
+    - name: Enable docker service
+      ansible.builtin.systemd:
+        name: docker
+        enabled: true
+        state: started
+
+    - name: Create control directories
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: directory
+        mode: "0755"
+      loop:
+        - /opt/connect
+        - /opt/connect/app
+        - /opt/connect/app/infra
+        - /opt/connect/app/infra/compose
+        - /opt/connect/control
+        - /opt/connect/shared
+        - /opt/connect/shared/xray
+
+    - name: Copy control application files
+      ansible.builtin.copy:
+        src: "{{ item.src }}"
+        dest: "{{ item.dest }}"
+      loop:
+        - { src: "{{ playbook_dir }}/../../../src", dest: "/opt/connect/app/" }
+        - { src: "{{ playbook_dir }}/../../../alembic", dest: "/opt/connect/app/" }
+
+    - name: Copy control root files
+      ansible.builtin.copy:
+        src: "{{ item.src }}"
+        dest: "{{ item.dest }}"
+        mode: "{{ item.mode | default('0644') }}"
+      loop:
+        - { src: "{{ playbook_dir }}/../../../pyproject.toml", dest: "/opt/connect/app/pyproject.toml" }
+        - { src: "{{ playbook_dir }}/../../../README.md", dest: "/opt/connect/app/README.md" }
+        - { src: "{{ playbook_dir }}/../../../alembic.ini", dest: "/opt/connect/app/alembic.ini" }
+        - { src: "{{ playbook_dir }}/../../compose/Dockerfile.control", dest: "/opt/connect/app/infra/compose/Dockerfile.control" }
+
+    - name: Copy control compose file
+      ansible.builtin.copy:
+        src: "{{ playbook_dir }}/../../compose/docker-compose.control.yml"
+        dest: /opt/connect/control/docker-compose.yml
+        mode: "0644"
+
+    - name: Copy control environment file
+      ansible.builtin.copy:
+        src: "{{ playbook_dir }}/../../../.env"
+        dest: /opt/connect/.env
+        mode: "0600"
+
+    - name: Start control stack
+      ansible.builtin.command: docker compose --env-file /opt/connect/.env -f /opt/connect/control/docker-compose.yml -p connect-control up -d --build
+      changed_when: true
+
+    - name: Run control DB migrations
+      ansible.builtin.command: docker compose --env-file /opt/connect/.env -f /opt/connect/control/docker-compose.yml -p connect-control exec -T control-api connectctl init-db
+      register: migrate_cmd
+      retries: 10
+      delay: 3
+      until: migrate_cmd.rc == 0
+      changed_when: true

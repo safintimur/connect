@@ -1,0 +1,19 @@
+{
+  "domainStrategy": "AsIs",
+  "rules": [
+    {
+      "type": "field",
+      "domain": [
+        "geosite:ru"
+      ],
+      "outboundTag": "direct"
+    },
+    {
+      "type": "field",
+      "ip": [
+        "geoip:private"
+      ],
+      "outboundTag": "direct"
+    }
+  ]
+}

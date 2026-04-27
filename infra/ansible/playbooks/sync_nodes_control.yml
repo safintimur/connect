@@ -1,0 +1,23 @@
+---
+- name: Sync node metadata into control DB through control runtime
+  hosts: control
+  become: true
+  vars:
+    control_node_name: connect-control-1
+    worker_node_name: connect-worker-uk-1
+    control_public_ip: ""
+    worker_public_ip: ""
+    control_provider_id: ""
+    worker_provider_id: ""
+  tasks:
+    - name: Upsert control node
+      ansible.builtin.command: >-
+        docker compose --env-file /opt/connect/.env -f /opt/connect/control/docker-compose.yml -p connect-control exec -T control-api
+        connectctl node-upsert {{ control_node_name }} --role control --country gb --provider digitalocean --provider-node-id {{ control_provider_id }} --public-ip {{ control_public_ip }} --actor automation
+      changed_when: true
+
+    - name: Upsert worker node
+      ansible.builtin.command: >-
+        docker compose --env-file /opt/connect/.env -f /opt/connect/control/docker-compose.yml -p connect-control exec -T control-api
+        connectctl node-upsert {{ worker_node_name }} --role worker --country gb --provider digitalocean --provider-node-id {{ worker_provider_id }} --public-ip {{ worker_public_ip }} --actor automation
+      changed_when: true

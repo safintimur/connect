@@ -1,0 +1,12 @@
+# Managed by Ansible (connect hardening)
+[DEFAULT]
+bantime = 1h
+findtime = 10m
+maxretry = 5
+backend = systemd
+
+[sshd]
+enabled = true
+mode = aggressive
+port = ssh
+logpath = %(sshd_log)s

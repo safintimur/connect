@@ -1,0 +1,42 @@
+version: "3.9"
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: connect-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: connect_control
+      POSTGRES_USER: connect
+      POSTGRES_PASSWORD: connect
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+  control-api:
+    build:
+      context: ../app
+      dockerfile: infra/compose/Dockerfile.control
+    container_name: connect-control-api
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgresql+psycopg://connect:connect@postgres:5432/connect_control
+      BASE_SUBSCRIPTION_URL: ${BASE_SUBSCRIPTION_URL}
+      REALITY_PRIVATE_KEY: ${REALITY_PRIVATE_KEY}
+      REALITY_PUBLIC_KEY: ${REALITY_PUBLIC_KEY}
+      REALITY_SHORT_ID: ${REALITY_SHORT_ID}
+      REALITY_SERVER_NAME: ${REALITY_SERVER_NAME}
+      REALITY_DEST: ${REALITY_DEST}
+      VLESS_FLOW: ${VLESS_FLOW}
+      VLESS_FP: ${VLESS_FP}
+    depends_on:
+      - postgres
+    volumes:
+      - /opt/connect/shared:/opt/connect/shared
+    command: ["uvicorn", "control_plane.api:app", "--host", "0.0.0.0", "--port", "8080"]
+    ports:
+      - "80:8080"
+
+volumes:
+  postgres_data:

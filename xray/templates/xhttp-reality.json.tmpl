@@ -1,0 +1,46 @@
+{
+  "log": {
+    "loglevel": "warning"
+  },
+  "inbounds": [
+    {
+      "port": 8443,
+      "protocol": "vless",
+      "settings": {
+        "clients": [
+          {
+            "id": "${XRAY_UUID}",
+            "flow": ""
+          }
+        ],
+        "decryption": "none"
+      },
+      "streamSettings": {
+        "network": "xhttp",
+        "security": "reality",
+        "realitySettings": {
+          "show": false,
+          "dest": "${REALITY_DEST}",
+          "xver": 0,
+          "serverNames": [
+            "${REALITY_SERVER_NAME}"
+          ],
+          "privateKey": "${REALITY_PRIVATE_KEY}",
+          "shortIds": [
+            "${REALITY_SHORT_ID}"
+          ]
+        }
+      }
+    }
+  ],
+  "outbounds": [
+    {
+      "tag": "direct",
+      "protocol": "freedom"
+    },
+    {
+      "tag": "blocked",
+      "protocol": "blackhole"
+    }
+  ]
+}

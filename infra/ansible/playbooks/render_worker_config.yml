@@ -1,0 +1,33 @@
+---
+- name: Render worker config on control and fetch to deploy controller
+  hosts: control
+  become: true
+  vars:
+    worker_node_name: connect-worker-uk-1
+    remote_output_path: "/opt/connect/shared/xray/{{ worker_node_name }}.json"
+  tasks:
+    - name: Ensure remote xray config directory exists
+      ansible.builtin.file:
+        path: /opt/connect/shared/xray
+        state: directory
+        mode: "0755"
+
+    - name: Render worker config from control metadata
+      ansible.builtin.command: >-
+        docker compose --env-file /opt/connect/.env -f /opt/connect/control/docker-compose.yml -p connect-control exec -T control-api
+        connectctl xray-render-node-config {{ worker_node_name }} --output {{ remote_output_path }}
+      changed_when: true
+
+    - name: Ensure local generated directory exists
+      ansible.builtin.file:
+        path: "{{ playbook_dir }}/../../generated/xray"
+        state: directory
+        mode: "0755"
+      delegate_to: localhost
+      become: false
+
+    - name: Fetch rendered worker config to deploy controller
+      ansible.builtin.fetch:
+        src: "{{ remote_output_path }}"
+        dest: "{{ playbook_dir }}/../../generated/xray/"
+        flat: true

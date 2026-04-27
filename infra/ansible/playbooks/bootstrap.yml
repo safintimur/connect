@@ -1,0 +1,104 @@
+---
+- name: Bootstrap Linux hosts
+  hosts: all
+  become: true
+  handlers:
+    - name: Validate and restart ssh
+      ansible.builtin.shell: |
+        sshd -t
+        systemctl restart ssh || systemctl restart sshd
+      changed_when: true
+
+    - name: Restart fail2ban
+      ansible.builtin.systemd:
+        name: fail2ban
+        enabled: true
+        state: restarted
+
+    - name: Reload sysctl
+      ansible.builtin.command: sysctl --system
+      changed_when: true
+
+    - name: Enable unattended upgrades
+      ansible.builtin.command: dpkg-reconfigure -f noninteractive unattended-upgrades
+      changed_when: true
+  tasks:
+    - name: Update apt cache
+      ansible.builtin.apt:
+        update_cache: true
+      when: ansible_os_family == "Debian"
+
+    - name: Install baseline packages
+      ansible.builtin.package:
+        name:
+          - curl
+          - jq
+          - unzip
+          - fail2ban
+          - ufw
+          - openssh-server
+          - unattended-upgrades
+          - apt-listchanges
+        state: present
+
+    - name: Install SSH hardening drop-in
+      ansible.builtin.template:
+        src: ../templates/sshd-hardening.conf.j2
+        dest: /etc/ssh/sshd_config.d/99-connect-hardening.conf
+        mode: "0644"
+      notify: Validate and restart ssh
+
+    - name: Install fail2ban local jail config
+      ansible.builtin.template:
+        src: ../templates/fail2ban-jail.local.j2
+        dest: /etc/fail2ban/jail.local
+        mode: "0644"
+      notify: Restart fail2ban
+
+    - name: Install sysctl hardening profile
+      ansible.builtin.template:
+        src: ../templates/sysctl-connect-hardening.conf.j2
+        dest: /etc/sysctl.d/99-connect-hardening.conf
+        mode: "0644"
+      notify: Reload sysctl
+
+    - name: Enable unattended security upgrades
+      ansible.builtin.copy:
+        dest: /etc/apt/apt.conf.d/20auto-upgrades
+        mode: "0644"
+        content: |
+          APT::Periodic::Update-Package-Lists "1";
+          APT::Periodic::Unattended-Upgrade "1";
+      notify: Enable unattended upgrades
+
+    - name: Reset UFW to default deny incoming
+      ansible.builtin.command: ufw --force default deny incoming
+      changed_when: true
+
+    - name: Set UFW default allow outgoing
+      ansible.builtin.command: ufw --force default allow outgoing
+      changed_when: true
+
+    - name: Allow SSH
+      ansible.builtin.command: ufw --force allow 22/tcp
+      changed_when: true
+
+    - name: Allow control HTTP
+      ansible.builtin.command: ufw --force allow 80/tcp
+      changed_when: true
+      when: inventory_hostname in groups.get('control', [])
+
+    - name: Allow worker VLESS main port
+      ansible.builtin.command: ufw --force allow 443/tcp
+      changed_when: true
+      when: inventory_hostname in groups.get('workers_uk', [])
+
+    - name: Enable UFW
+      ansible.builtin.command: ufw --force enable
+      changed_when: true
+
+    - name: Ensure fail2ban enabled
+      ansible.builtin.systemd:
+        name: fail2ban
+        enabled: true
+        state: started

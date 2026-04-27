@@ -1,0 +1,58 @@
+{
+  "log": {
+    "loglevel": "warning"
+  },
+  "inbounds": [
+    {
+      "port": 443,
+      "protocol": "vless",
+      "settings": {
+        "clients": [
+          {
+            "id": "${XRAY_UUID}",
+            "flow": "xtls-rprx-vision"
+          }
+        ],
+        "decryption": "none"
+      },
+      "streamSettings": {
+        "network": "tcp",
+        "security": "reality",
+        "realitySettings": {
+          "show": false,
+          "dest": "${REALITY_DEST}",
+          "xver": 0,
+          "serverNames": [
+            "${REALITY_SERVER_NAME}"
+          ],
+          "privateKey": "${REALITY_PRIVATE_KEY}",
+          "shortIds": [
+            "${REALITY_SHORT_ID}"
+          ]
+        }
+      }
+    }
+  ],
+  "outbounds": [
+    {
+      "tag": "direct",
+      "protocol": "freedom"
+    },
+    {
+      "tag": "blocked",
+      "protocol": "blackhole"
+    }
+  ],
+  "routing": {
+    "domainStrategy": "AsIs",
+    "rules": [
+      {
+        "type": "field",
+        "outboundTag": "direct",
+        "domain": [
+          "geosite:ru"
+        ]
+      }
+    ]
+  }
+}
