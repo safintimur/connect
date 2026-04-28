@@ -153,6 +153,7 @@ jobs:
 
       - name: Refresh inventory and node metadata
         env:
+          ANSIBLE_HOST_KEY_CHECKING: "False"
           TF_BACKEND_CONFIG_FILE: backend.hcl
         run: |
           make tf-init
