@@ -59,7 +59,7 @@ jobs:
 
       - name: Build terraform.tfvars from secrets
         run: |
-          cat > infra/terraform/terraform.tfvars <<'EOFVARS'
+          cat > infra/terraform/terraform.tfvars <<EOFVARS
           do_token = "${{ secrets.DIGITALOCEAN_TOKEN }}"
           project_name = "connect-core"
           ssh_key_fingerprints = ["${{ secrets.DO_SSH_KEY_FINGERPRINT }}"]
