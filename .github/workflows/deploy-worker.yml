@@ -125,7 +125,7 @@ jobs:
           cat > infra/terraform/terraform.tfvars <<EOFVARS
           do_token = "${{ secrets.DIGITALOCEAN_TOKEN }}"
           project_name = "${PROJECT_NAME}"
-          create_control = true
+          create_control = false
           create_worker = true
           ssh_key_fingerprints = ["${{ secrets.DO_SSH_KEY_FINGERPRINT }}"]
           control_node_name = "${CONTROL_NODE_NAME}"
@@ -143,7 +143,7 @@ jobs:
         if: env.AUTO_RECREATE_INFRA == 'true'
         env:
           DIGITALOCEAN_TOKEN: ${{ secrets.DIGITALOCEAN_TOKEN }}
-          CREATE_CONTROL: "true"
+          CREATE_CONTROL: "false"
           CREATE_WORKER: "true"
         run: |
           python scripts/cleanup-do-resources.py
