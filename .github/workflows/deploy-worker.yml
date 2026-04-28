@@ -125,7 +125,7 @@ jobs:
           cat > infra/terraform/terraform.tfvars <<EOFVARS
           do_token = "${{ secrets.DIGITALOCEAN_TOKEN }}"
           project_name = "${PROJECT_NAME}"
-          create_control = false
+          create_control = true
           create_worker = true
           ssh_key_fingerprints = ["${{ secrets.DO_SSH_KEY_FINGERPRINT }}"]
           control_node_name = "${CONTROL_NODE_NAME}"
