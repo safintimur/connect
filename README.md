@@ -49,14 +49,34 @@ Re-run after user/node config changes:
 - `DIGITALOCEAN_TOKEN`
 - `DO_SSH_KEY_FINGERPRINT`
 - `DEPLOY_SSH_PRIVATE_KEY`
+- `DO_SPACES_ACCESS_KEY_ID`
+- `DO_SPACES_SECRET_ACCESS_KEY`
 - `REALITY_PRIVATE_KEY`
 - `REALITY_PUBLIC_KEY`
 - `REALITY_SHORT_ID`
 
 ## Required GitHub variables
 - `BASE_SUBSCRIPTION_URL`
-- `ADMIN_CIDRS_JSON` (recommended, JSON array, example: `["203.0.113.10/32"]`)
+- `ADMIN_CIDRS_JSON` (required, JSON array, example: `["203.0.113.10/32"]`; must not include `0.0.0.0/0` or `::/0`)
+- `TF_STATE_BUCKET` (recommended, default: `connect-space-bucket`)
+- `TF_STATE_REGION` (recommended, default: `lon1`)
+- `TF_STATE_KEY_PREFIX` (recommended, default: `connect-prod`)
+- `PROJECT_NAME` (recommended, default: `connect-core`)
+- `CONTROL_NODE_NAME` (recommended, default: `connect-control-1`)
+- `CONTROL_NODE_REGION` (recommended, default: `lon1`)
+- `CONTROL_NODE_SIZE` (recommended, default: `s-1vcpu-1gb`)
+- `CONTROL_NODE_IMAGE` (recommended, default: `ubuntu-24-04-x64`)
+- `WORKER_NODE_NAME` (recommended, default: `connect-worker-uk-1`)
+- `WORKER_NODE_REGION` (recommended, default: `lon1`)
+- `WORKER_NODE_SIZE` (recommended, default: `s-1vcpu-1gb`)
+- `WORKER_NODE_IMAGE` (recommended, default: `ubuntu-24-04-x64`)
+- `AUTO_RECREATE_INFRA` (`false` by default; set `true` only for forced replacement of matching droplets/firewalls)
 - optional: `REALITY_SERVER_NAME`, `REALITY_DEST`
+
+## Terraform state
+- CI uses remote Terraform state in DigitalOcean Spaces via S3 backend config (`infra/terraform/backend.hcl`, generated in workflow runtime).
+- State lock file is enabled (`use_lockfile = true`).
+- Workflows are serialized with a single concurrency group (`connect-infra-prod`) to avoid parallel state mutation.
 
 ## User provisioning
 - `connectctl user-provision-smart alice "Alice" connect-worker-uk-1`

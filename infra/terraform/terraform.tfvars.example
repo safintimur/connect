@@ -1,6 +1,8 @@
 do_token = "REPLACE_WITH_DIGITALOCEAN_TOKEN"
 
 project_name = "connect-core"
+create_control = true
+create_worker  = true
 
 # Add your existing DO SSH key fingerprints.
 ssh_key_fingerprints = [
@@ -9,7 +11,7 @@ ssh_key_fingerprints = [
 
 control_node_name   = "connect-control-1"
 control_node_region = "lon1"
-control_node_size   = "s-1vcpu-2gb"
+control_node_size   = "s-1vcpu-1gb"
 control_node_image  = "ubuntu-24-04-x64"
 
 worker_node_name   = "connect-worker-uk-1"

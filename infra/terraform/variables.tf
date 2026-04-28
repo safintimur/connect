@@ -28,7 +28,7 @@ variable "control_node_region" {
 
 variable "control_node_size" {
   type    = string
-  default = "s-1vcpu-2gb"
+  default = "s-1vcpu-1gb"
 }
 
 variable "control_node_image" {
@@ -60,4 +60,16 @@ variable "allowed_admin_cidrs" {
   type        = list(string)
   description = "CIDRs allowed for SSH and admin endpoints"
   default     = ["0.0.0.0/0", "::/0"]
+}
+
+variable "create_control" {
+  type        = bool
+  description = "Whether to create/manage control node resources in this apply run"
+  default     = true
+}
+
+variable "create_worker" {
+  type        = bool
+  description = "Whether to create/manage worker node resources in this apply run"
+  default     = true
 }

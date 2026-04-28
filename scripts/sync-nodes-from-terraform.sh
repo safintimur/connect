@@ -24,10 +24,16 @@ worker_name="$(echo "$worker_json" | jq -r '.name')"
 worker_id="$(echo "$worker_json" | jq -r '.id | tostring')"
 worker_ip="$(echo "$worker_json" | jq -r '.public_ip')"
 
+worker_sync_enabled="false"
+if [[ "$worker_json" != "null" ]]; then
+  worker_sync_enabled="true"
+fi
+
 ansible-playbook -i "$INVENTORY" "$PLAYBOOK" \
   -e "control_node_name=$control_name" \
-  -e "worker_node_name=$worker_name" \
   -e "control_provider_id=$control_id" \
-  -e "worker_provider_id=$worker_id" \
   -e "control_public_ip=$control_ip" \
+  -e "worker_sync_enabled=$worker_sync_enabled" \
+  -e "worker_node_name=$worker_name" \
+  -e "worker_provider_id=$worker_id" \
   -e "worker_public_ip=$worker_ip"
