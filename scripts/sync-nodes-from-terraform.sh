@@ -13,8 +13,9 @@ for cmd in terraform jq ansible-playbook; do
   fi
 done
 
-control_json="$(terraform -chdir="$TF_DIR" output -json control_node)"
-worker_json="$(terraform -chdir="$TF_DIR" output -json worker_node 2>/dev/null || echo null)"
+outputs_json="$(terraform -chdir="$TF_DIR" output -json -no-color)"
+control_json="$(echo "$outputs_json" | jq -c '.control_node.value // null')"
+worker_json="$(echo "$outputs_json" | jq -c '.worker_node.value // null')"
 
 control_name="$(echo "$control_json" | jq -r '.name')"
 control_id="$(echo "$control_json" | jq -r '.id | tostring')"
