@@ -25,7 +25,7 @@ tf-plan: tf-init
 	terraform -chdir=infra/terraform plan -var-file=terraform.tfvars
 
 tf-apply: tf-init
-	terraform -chdir=infra/terraform apply -var-file=terraform.tfvars
+	terraform -chdir=infra/terraform apply -auto-approve -var-file=terraform.tfvars
 
 render-inventory:
 	bash scripts/render-ansible-inventory.sh
