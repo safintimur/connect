@@ -159,6 +159,8 @@ jobs:
           make tf-init
           make tf-apply
           make render-inventory
+          make ansible-bootstrap
+          make deploy-control
           make sync-nodes
 
       - name: Wait for worker SSH readiness
