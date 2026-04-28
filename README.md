@@ -42,8 +42,22 @@ Re-run after user/node config changes:
 - `make reconcile-worker`
 
 ## CI workflows
+- Preflight checks: `.github/workflows/preflight.yml`
 - Control bootstrap: `.github/workflows/deploy.yml`
 - Worker deploy: `.github/workflows/deploy-worker.yml`
+
+## Fast local test loop (no deploy)
+Run this before push:
+- `make preflight`
+- `make ci-preflight`
+
+`ci-preflight` includes:
+- Python compile check
+- Terraform `fmt -check` and `validate` (`init -backend=false`, no remote state changes)
+- Ansible playbook syntax-check
+
+Optional local GitHub Actions emulation with `act`:
+- `act -W .github/workflows/preflight.yml -j lint-and-smoke`
 
 ## Required GitHub secrets
 - `DIGITALOCEAN_TOKEN`

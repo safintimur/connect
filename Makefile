@@ -1,4 +1,4 @@
-.PHONY: preflight check-env validate healthcheck compile initdb tf-init tf-plan tf-apply render-inventory deploy-control sync-nodes render-xray ansible-bootstrap ansible-xray control-bootstrap worker-deploy reconcile-worker
+.PHONY: preflight check-env validate healthcheck compile initdb tf-init tf-plan tf-apply tf-validate tf-fmt-check ansible-syntax ci-preflight render-inventory deploy-control sync-nodes render-xray ansible-bootstrap ansible-xray control-bootstrap worker-deploy reconcile-worker
 
 preflight:
 	bash scripts/preflight.sh
@@ -14,6 +14,21 @@ healthcheck:
 
 compile:
 	python3 -m compileall src/control_plane
+
+tf-fmt-check:
+	terraform -chdir=infra/terraform fmt -check -recursive
+
+tf-validate:
+	terraform -chdir=infra/terraform init -backend=false
+	terraform -chdir=infra/terraform validate
+
+ansible-syntax:
+	ansible-playbook --syntax-check -i localhost, infra/ansible/playbooks/bootstrap.yml
+	ansible-playbook --syntax-check -i localhost, infra/ansible/playbooks/deploy_control.yml
+	ansible-playbook --syntax-check -i localhost, infra/ansible/playbooks/install_xray.yml
+	ansible-playbook --syntax-check -i localhost, infra/ansible/playbooks/sync_nodes_control.yml
+
+ci-preflight: compile tf-fmt-check tf-validate ansible-syntax
 
 initdb:
 	connectctl init-db

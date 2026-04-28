@@ -80,16 +80,16 @@
       changed_when: true
 
     - name: Allow SSH
-      ansible.builtin.command: ufw --force allow 22/tcp
+      ansible.builtin.command: ufw allow 22/tcp
       changed_when: true
 
     - name: Allow control HTTP
-      ansible.builtin.command: ufw --force allow 80/tcp
+      ansible.builtin.command: ufw allow 80/tcp
       changed_when: true
       when: inventory_hostname in groups.get('control', [])
 
     - name: Allow worker VLESS main port
-      ansible.builtin.command: ufw --force allow 443/tcp
+      ansible.builtin.command: ufw allow 443/tcp
       changed_when: true
       when: inventory_hostname in groups.get('workers_uk', [])
 
