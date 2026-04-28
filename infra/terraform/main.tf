@@ -7,6 +7,7 @@ locals {
 }
 
 resource "digitalocean_droplet" "control" {
+  count      = var.create_control ? 1 : 0
   name      = var.control_node_name
   region    = var.control_node_region
   size      = var.control_node_size
@@ -17,6 +18,7 @@ resource "digitalocean_droplet" "control" {
 }
 
 resource "digitalocean_droplet" "worker_uk" {
+  count      = var.create_worker ? 1 : 0
   name      = var.worker_node_name
   region    = var.worker_node_region
   size      = var.worker_node_size
@@ -27,9 +29,10 @@ resource "digitalocean_droplet" "worker_uk" {
 }
 
 resource "digitalocean_firewall" "control" {
+  count = var.create_control ? 1 : 0
   name = "${var.project_name}-control-fw"
 
-  droplet_ids = [digitalocean_droplet.control.id]
+  droplet_ids = [digitalocean_droplet.control[0].id]
 
   inbound_rule {
     protocol         = "tcp"
@@ -57,9 +60,10 @@ resource "digitalocean_firewall" "control" {
 }
 
 resource "digitalocean_firewall" "worker_uk" {
+  count = var.create_worker ? 1 : 0
   name = "${var.project_name}-worker-uk-fw"
 
-  droplet_ids = [digitalocean_droplet.worker_uk.id]
+  droplet_ids = [digitalocean_droplet.worker_uk[0].id]
 
   inbound_rule {
     protocol         = "tcp"
@@ -87,36 +91,36 @@ resource "digitalocean_firewall" "worker_uk" {
 }
 
 output "control_node" {
-  value = {
-    id        = digitalocean_droplet.control.id
-    name      = digitalocean_droplet.control.name
-    public_ip = digitalocean_droplet.control.ipv4_address
-    region    = digitalocean_droplet.control.region
-  }
+  value = var.create_control ? {
+    id        = digitalocean_droplet.control[0].id
+    name      = digitalocean_droplet.control[0].name
+    public_ip = digitalocean_droplet.control[0].ipv4_address
+    region    = digitalocean_droplet.control[0].region
+  } : null
 }
 
 output "worker_node" {
-  value = {
-    id        = digitalocean_droplet.worker_uk.id
-    name      = digitalocean_droplet.worker_uk.name
-    public_ip = digitalocean_droplet.worker_uk.ipv4_address
-    region    = digitalocean_droplet.worker_uk.region
-  }
+  value = var.create_worker ? {
+    id        = digitalocean_droplet.worker_uk[0].id
+    name      = digitalocean_droplet.worker_uk[0].name
+    public_ip = digitalocean_droplet.worker_uk[0].ipv4_address
+    region    = digitalocean_droplet.worker_uk[0].region
+  } : null
 }
 
 output "ansible_inventory" {
   value = {
-    control = {
-      (digitalocean_droplet.control.name) = {
-        ansible_host = digitalocean_droplet.control.ipv4_address
+    control = var.create_control ? {
+      (digitalocean_droplet.control[0].name) = {
+        ansible_host = digitalocean_droplet.control[0].ipv4_address
         ansible_user = "root"
       }
-    }
-    workers_uk = {
-      (digitalocean_droplet.worker_uk.name) = {
-        ansible_host = digitalocean_droplet.worker_uk.ipv4_address
+    } : {}
+    workers_uk = var.create_worker ? {
+      (digitalocean_droplet.worker_uk[0].name) = {
+        ansible_host = digitalocean_droplet.worker_uk[0].ipv4_address
         ansible_user = "root"
       }
-    }
+    } : {}
   }
 }

@@ -19,7 +19,11 @@ initdb:
 	connectctl init-db
 
 tf-init:
-	terraform -chdir=infra/terraform init
+	@if [ -n "$$TF_BACKEND_CONFIG_FILE" ]; then \
+		terraform -chdir=infra/terraform init -backend-config=$$TF_BACKEND_CONFIG_FILE; \
+	else \
+		terraform -chdir=infra/terraform init; \
+	fi
 
 tf-plan: tf-init
 	terraform -chdir=infra/terraform plan -var-file=terraform.tfvars

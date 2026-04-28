@@ -1,9 +1,11 @@
 name: Control Bootstrap
 
 on:
-  push:
-    branches: [ "main" ]
   workflow_dispatch:
+
+concurrency:
+  group: connect-infra-prod
+  cancel-in-progress: false
 
 jobs:
   deploy:
@@ -13,6 +15,21 @@ jobs:
     env:
       DATABASE_URL: postgresql+psycopg://connect:connect@postgres:5432/connect_control
       BASE_SUBSCRIPTION_URL: ${{ vars.BASE_SUBSCRIPTION_URL }}
+      PROJECT_NAME: ${{ vars.PROJECT_NAME || 'connect-core' }}
+      CONTROL_NODE_NAME: ${{ vars.CONTROL_NODE_NAME || 'connect-control-1' }}
+      CONTROL_NODE_REGION: ${{ vars.CONTROL_NODE_REGION || 'lon1' }}
+      CONTROL_NODE_SIZE: ${{ vars.CONTROL_NODE_SIZE || 's-1vcpu-1gb' }}
+      CONTROL_NODE_IMAGE: ${{ vars.CONTROL_NODE_IMAGE || 'ubuntu-24-04-x64' }}
+      WORKER_NODE_NAME: ${{ vars.WORKER_NODE_NAME || 'connect-worker-uk-1' }}
+      WORKER_NODE_REGION: ${{ vars.WORKER_NODE_REGION || 'lon1' }}
+      WORKER_NODE_SIZE: ${{ vars.WORKER_NODE_SIZE || 's-1vcpu-1gb' }}
+      WORKER_NODE_IMAGE: ${{ vars.WORKER_NODE_IMAGE || 'ubuntu-24-04-x64' }}
+      AUTO_RECREATE_INFRA: ${{ vars.AUTO_RECREATE_INFRA || 'false' }}
+      TF_STATE_BUCKET: ${{ vars.TF_STATE_BUCKET || 'connect-space-bucket' }}
+      TF_STATE_REGION: ${{ vars.TF_STATE_REGION || 'lon1' }}
+      TF_STATE_KEY_PREFIX: ${{ vars.TF_STATE_KEY_PREFIX || 'connect-prod' }}
+      AWS_ACCESS_KEY_ID: ${{ secrets.DO_SPACES_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.DO_SPACES_SECRET_ACCESS_KEY }}
       REALITY_PRIVATE_KEY: ${{ secrets.REALITY_PRIVATE_KEY }}
       REALITY_PUBLIC_KEY: ${{ secrets.REALITY_PUBLIC_KEY }}
       REALITY_SHORT_ID: ${{ secrets.REALITY_SHORT_ID }}
@@ -20,7 +37,7 @@ jobs:
       REALITY_DEST: ${{ vars.REALITY_DEST || 'www.cloudflare.com:443' }}
       VLESS_FLOW: xtls-rprx-vision
       VLESS_FP: chrome
-      ADMIN_CIDRS_JSON: ${{ vars.ADMIN_CIDRS_JSON || '["0.0.0.0/0","::/0"]' }}
+      ADMIN_CIDRS_JSON: ${{ vars.ADMIN_CIDRS_JSON }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -39,6 +56,27 @@ jobs:
           pip install .
           sudo apt-get update
           sudo apt-get install -y ansible jq openssh-client
+
+      - name: Validate admin CIDRs
+        run: |
+          python scripts/validate-admin-cidrs.py
+
+      - name: Configure Terraform backend (DO Spaces)
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.DO_SPACES_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.DO_SPACES_SECRET_ACCESS_KEY }}
+        run: |
+          cat > infra/terraform/backend.hcl <<EOF_BACKEND
+          bucket = "${TF_STATE_BUCKET}"
+          key = "${TF_STATE_KEY_PREFIX}/infra/terraform.tfstate"
+          region = "${TF_STATE_REGION}"
+          endpoints = { s3 = "https://${TF_STATE_REGION}.digitaloceanspaces.com" }
+          skip_region_validation = true
+          skip_credentials_validation = true
+          skip_requesting_account_id = true
+          use_path_style = false
+          use_lockfile = true
+          EOF_BACKEND
 
       - name: Prepare runtime .env
         run: |
@@ -63,18 +101,29 @@ jobs:
         run: |
           cat > infra/terraform/terraform.tfvars <<EOFVARS
           do_token = "${{ secrets.DIGITALOCEAN_TOKEN }}"
-          project_name = "connect-core"
+          project_name = "${PROJECT_NAME}"
+          create_control = true
+          create_worker = false
           ssh_key_fingerprints = ["${{ secrets.DO_SSH_KEY_FINGERPRINT }}"]
-          control_node_name = "connect-control-1"
-          control_node_region = "lon1"
-          control_node_size = "s-1vcpu-2gb"
-          control_node_image = "ubuntu-24-04-x64"
-          worker_node_name = "connect-worker-uk-1"
-          worker_node_region = "lon1"
-          worker_node_size = "s-1vcpu-1gb"
-          worker_node_image = "ubuntu-24-04-x64"
+          control_node_name = "${CONTROL_NODE_NAME}"
+          control_node_region = "${CONTROL_NODE_REGION}"
+          control_node_size = "${CONTROL_NODE_SIZE}"
+          control_node_image = "${CONTROL_NODE_IMAGE}"
+          worker_node_name = "${WORKER_NODE_NAME}"
+          worker_node_region = "${WORKER_NODE_REGION}"
+          worker_node_size = "${WORKER_NODE_SIZE}"
+          worker_node_image = "${WORKER_NODE_IMAGE}"
           allowed_admin_cidrs = ${ADMIN_CIDRS_JSON}
           EOFVARS
+
+      - name: Cleanup existing control resources (auto-recreate)
+        if: env.AUTO_RECREATE_INFRA == 'true'
+        env:
+          DIGITALOCEAN_TOKEN: ${{ secrets.DIGITALOCEAN_TOKEN }}
+          CREATE_CONTROL: "true"
+          CREATE_WORKER: "false"
+        run: |
+          python scripts/cleanup-do-resources.py
 
       - name: Check required environment
         run: make check-env
@@ -82,5 +131,6 @@ jobs:
       - name: Control bootstrap process
         env:
           ANSIBLE_HOST_KEY_CHECKING: "False"
+          TF_BACKEND_CONFIG_FILE: backend.hcl
         run: |
           make control-bootstrap

@@ -9,6 +9,7 @@
     worker_public_ip: ""
     control_provider_id: ""
     worker_provider_id: ""
+    worker_sync_enabled: false
   tasks:
     - name: Upsert control node
       ansible.builtin.command: >-
@@ -21,3 +22,4 @@
         docker compose --env-file /opt/connect/.env -f /opt/connect/control/docker-compose.yml -p connect-control exec -T control-api
         connectctl node-upsert {{ worker_node_name }} --role worker --country gb --provider digitalocean --provider-node-id {{ worker_provider_id }} --public-ip {{ worker_public_ip }} --actor automation
       changed_when: true
+      when: worker_sync_enabled | bool
