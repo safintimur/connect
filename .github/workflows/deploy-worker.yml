@@ -6,6 +6,7 @@ on:
 jobs:
   deploy-worker:
     runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'
     env:
       DATABASE_URL: postgresql+psycopg://connect:connect@postgres:5432/connect_control
       BASE_SUBSCRIPTION_URL: ${{ vars.BASE_SUBSCRIPTION_URL }}
