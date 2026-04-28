@@ -161,6 +161,12 @@ jobs:
           make render-inventory
           make sync-nodes
 
+      - name: Wait for worker SSH readiness
+        env:
+          ANSIBLE_HOST_KEY_CHECKING: "False"
+        run: |
+          ansible workers_uk -i infra/ansible/inventory.generated.ini -m wait_for_connection -a "timeout=300"
+
       - name: Deploy worker runtime
         env:
           ANSIBLE_HOST_KEY_CHECKING: "False"
