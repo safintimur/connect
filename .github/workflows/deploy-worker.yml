@@ -159,7 +159,7 @@ jobs:
           make tf-init
           make tf-apply
           make render-inventory
-          make ansible-bootstrap
+          ansible-playbook -i infra/ansible/inventory.generated.ini infra/ansible/playbooks/bootstrap.yml --limit control
           make deploy-control
           make sync-nodes
 
