@@ -1,10 +1,11 @@
-name: CI
+name: Preflight
 
 on:
   pull_request:
-    branches: [ "main" ]
+    branches: ["main", "dev"]
   push:
-    branches-ignore: [ "main" ]
+    branches-ignore: ["main"]
+  workflow_dispatch:
 
 jobs:
   lint-and-smoke:

@@ -8,29 +8,29 @@ locals {
 
 resource "digitalocean_droplet" "control" {
   count      = var.create_control ? 1 : 0
-  name      = var.control_node_name
-  region    = var.control_node_region
-  size      = var.control_node_size
-  image     = var.control_node_image
-  ssh_keys  = var.ssh_key_fingerprints
+  name       = var.control_node_name
+  region     = var.control_node_region
+  size       = var.control_node_size
+  image      = var.control_node_image
+  ssh_keys   = var.ssh_key_fingerprints
   monitoring = true
-  tags      = concat(local.common_tags, ["role:control"])
+  tags       = concat(local.common_tags, ["role:control"])
 }
 
 resource "digitalocean_droplet" "worker_uk" {
   count      = var.create_worker ? 1 : 0
-  name      = var.worker_node_name
-  region    = var.worker_node_region
-  size      = var.worker_node_size
-  image     = var.worker_node_image
-  ssh_keys  = var.ssh_key_fingerprints
+  name       = var.worker_node_name
+  region     = var.worker_node_region
+  size       = var.worker_node_size
+  image      = var.worker_node_image
+  ssh_keys   = var.ssh_key_fingerprints
   monitoring = true
-  tags      = concat(local.common_tags, ["role:worker", "country:gb"])
+  tags       = concat(local.common_tags, ["role:worker", "country:gb"])
 }
 
 resource "digitalocean_firewall" "control" {
   count = var.create_control ? 1 : 0
-  name = "${var.project_name}-control-fw"
+  name  = "${var.project_name}-control-fw"
 
   droplet_ids = [digitalocean_droplet.control[0].id]
 
@@ -61,7 +61,7 @@ resource "digitalocean_firewall" "control" {
 
 resource "digitalocean_firewall" "worker_uk" {
   count = var.create_worker ? 1 : 0
-  name = "${var.project_name}-worker-uk-fw"
+  name  = "${var.project_name}-worker-uk-fw"
 
   droplet_ids = [digitalocean_droplet.worker_uk[0].id]
 
