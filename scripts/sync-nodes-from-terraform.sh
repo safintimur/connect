@@ -14,15 +14,15 @@ for cmd in terraform jq ansible-playbook; do
 done
 
 control_json="$(terraform -chdir="$TF_DIR" output -json control_node)"
-worker_json="$(terraform -chdir="$TF_DIR" output -json worker_node)"
+worker_json="$(terraform -chdir="$TF_DIR" output -json worker_node 2>/dev/null || echo null)"
 
 control_name="$(echo "$control_json" | jq -r '.name')"
 control_id="$(echo "$control_json" | jq -r '.id | tostring')"
 control_ip="$(echo "$control_json" | jq -r '.public_ip')"
 
-worker_name="$(echo "$worker_json" | jq -r '.name')"
-worker_id="$(echo "$worker_json" | jq -r '.id | tostring')"
-worker_ip="$(echo "$worker_json" | jq -r '.public_ip')"
+worker_name="$(echo "$worker_json" | jq -r '.name // empty')"
+worker_id="$(echo "$worker_json" | jq -r '.id // empty | tostring')"
+worker_ip="$(echo "$worker_json" | jq -r '.public_ip // empty')"
 
 worker_sync_enabled="false"
 if [[ "$worker_json" != "null" ]]; then
