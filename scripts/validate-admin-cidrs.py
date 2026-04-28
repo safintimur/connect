@@ -18,8 +18,8 @@ def main() -> int:
         print(f"ADMIN_CIDRS_JSON is not valid JSON: {exc}")
         return 1
 
-    if not isinstance(cidrs, list) or not cidrs:
-        print("ADMIN_CIDRS_JSON must be a non-empty JSON array")
+    if not isinstance(cidrs, list):
+        print("ADMIN_CIDRS_JSON must be a JSON array")
         return 1
 
     blocked = {"0.0.0.0/0", "::/0"}

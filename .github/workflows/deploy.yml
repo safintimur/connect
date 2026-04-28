@@ -97,6 +97,23 @@ jobs:
           echo "${{ secrets.DEPLOY_SSH_PRIVATE_KEY }}" > ~/.ssh/id_ed25519
           chmod 600 ~/.ssh/id_ed25519
 
+      - name: Build effective admin CIDRs (runner only)
+        run: |
+          export RUNNER_IP="$(curl -4 -fsSL https://api.ipify.org)"
+          echo "Runner public IP: ${RUNNER_IP}"
+          python - <<'PY'
+          import ipaddress
+          import json
+          import os
+
+          runner_ip = os.environ["RUNNER_IP"]
+          effective = [f"{runner_ip}/32"]
+          ipaddress.ip_network(effective[0], strict=False)
+
+          with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as f:
+              f.write(f"ADMIN_CIDRS_EFFECTIVE_JSON={json.dumps(effective)}\n")
+          PY
+
       - name: Build terraform.tfvars from secrets
         run: |
           cat > infra/terraform/terraform.tfvars <<EOFVARS
@@ -113,7 +130,7 @@ jobs:
           worker_node_region = "${WORKER_NODE_REGION}"
           worker_node_size = "${WORKER_NODE_SIZE}"
           worker_node_image = "${WORKER_NODE_IMAGE}"
-          allowed_admin_cidrs = ${ADMIN_CIDRS_JSON}
+          allowed_admin_cidrs = ${ADMIN_CIDRS_EFFECTIVE_JSON}
           EOFVARS
 
       - name: Cleanup existing control resources (auto-recreate)
