@@ -57,7 +57,7 @@ Re-run after user/node config changes:
 
 ## Required GitHub variables
 - `BASE_SUBSCRIPTION_URL`
-- `ADMIN_CIDRS_JSON` (required, JSON array, example: `["203.0.113.10/32"]`; must not include `0.0.0.0/0` or `::/0`)
+- `ADMIN_CIDRS_JSON` (JSON array, may be `[]`; must not include `0.0.0.0/0` or `::/0`)
 - `TF_STATE_BUCKET` (recommended, default: `connect-space-bucket`)
 - `TF_STATE_REGION` (recommended, default: `lon1`)
 - `TF_STATE_KEY_PREFIX` (recommended, default: `connect-prod`)
@@ -77,6 +77,7 @@ Re-run after user/node config changes:
 - CI uses remote Terraform state in DigitalOcean Spaces via S3 backend config (`infra/terraform/backend.hcl`, generated in workflow runtime).
 - State lock file is enabled (`use_lockfile = true`).
 - Workflows are serialized with a single concurrency group (`connect-infra-prod`) to avoid parallel state mutation.
+- SSH admin access is runner-only by default during CI deploy (firewall 22 allows only the current GitHub runner public IP for that run).
 
 ## User provisioning
 - `connectctl user-provision-smart alice "Alice" connect-worker-uk-1`
