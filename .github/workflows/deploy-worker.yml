@@ -6,7 +6,6 @@ on:
 jobs:
   deploy-worker:
     runs-on: ubuntu-latest
-    if: secrets.DIGITALOCEAN_TOKEN != '' && secrets.DO_SSH_KEY_FINGERPRINT != '' && secrets.DEPLOY_SSH_PRIVATE_KEY != '' && secrets.REALITY_PRIVATE_KEY != '' && secrets.REALITY_PUBLIC_KEY != '' && secrets.REALITY_SHORT_ID != '' && vars.BASE_SUBSCRIPTION_URL != ''
     env:
       DATABASE_URL: postgresql+psycopg://connect:connect@postgres:5432/connect_control
       BASE_SUBSCRIPTION_URL: ${{ vars.BASE_SUBSCRIPTION_URL }}
