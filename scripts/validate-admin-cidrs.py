@@ -9,8 +9,8 @@ import sys
 def main() -> int:
     raw = os.getenv("ADMIN_CIDRS_JSON", "").strip()
     if not raw:
-        print("ADMIN_CIDRS_JSON is empty")
-        return 1
+        print("ADMIN_CIDRS_JSON is empty (allowed): runner-only CIDR will be used in workflow")
+        return 0
 
     try:
         cidrs = json.loads(raw)

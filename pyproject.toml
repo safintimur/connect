@@ -10,7 +10,9 @@ readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
   "alembic>=1.13.2",
+  "aiogram>=3.22.0",
   "fastapi>=0.111.0",
+  "requests>=2.32.3",
   "sqlalchemy>=2.0.30",
   "psycopg[binary]>=3.1.19",
   "typer>=0.12.3",
@@ -22,6 +24,7 @@ dependencies = [
 
 [project.scripts]
 connectctl = "control_plane.cli:app"
+connectbot = "control_plane.bot.app:run_bot"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/control_plane"]

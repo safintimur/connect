@@ -1,0 +1,201 @@
+name: Incident Handler
+
+on:
+  workflow_dispatch:
+    inputs:
+      incident_id:
+        description: "Incident id from bot"
+        required: true
+      action:
+        description: "approve|retry|propose_fix"
+        required: true
+      operation:
+        description: "Operation name"
+        required: false
+        default: ""
+      run_id:
+        description: "Optional workflow run id"
+        required: false
+        default: ""
+      pr_number:
+        description: "Optional PR number"
+        required: false
+        default: ""
+      summary:
+        description: "Optional short summary"
+        required: false
+        default: ""
+
+permissions:
+  actions: write
+  contents: write
+  pull-requests: write
+
+jobs:
+  handle:
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'
+    steps:
+      - name: Handle incident action
+        id: handle_action
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const action = `${{ toJson(github.event.inputs.action) }}`.replace(/"/g, '');
+            const incidentId = `${{ toJson(github.event.inputs.incident_id) }}`.replace(/"/g, '');
+            const runIdRaw = `${{ toJson(github.event.inputs.run_id) }}`.replace(/"/g, '');
+            const prRaw = `${{ toJson(github.event.inputs.pr_number) }}`.replace(/"/g, '');
+            const operation = `${{ toJson(github.event.inputs.operation) }}`.replace(/"/g, '');
+            const summary = `${{ toJson(github.event.inputs.summary) }}`.replace(/"/g, '');
+            core.setOutput('action', action);
+            core.setOutput('incident_id', incidentId);
+            core.setOutput('operation', operation);
+            core.setOutput('summary', summary);
+
+            core.info(`incident=${incidentId} action=${action} run_id=${runIdRaw} pr=${prRaw}`)
+
+            if (action === 'retry') {
+              if (!runIdRaw) {
+                core.setFailed('retry requested but run_id is empty');
+                return;
+              }
+              const run_id = Number(runIdRaw);
+              try {
+                await github.rest.actions.reRunWorkflowFailedJobs({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  run_id,
+                });
+                core.info(`Requested rerun-failed-jobs for run ${run_id}`);
+              } catch (e) {
+                core.warning(`rerun-failed-jobs failed, fallback to rerun: ${e.message}`);
+                await github.rest.actions.reRunWorkflow({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  run_id,
+                });
+                core.info(`Requested full rerun for run ${run_id}`);
+              }
+              return;
+            }
+
+            if (action === 'approve') {
+              if (!prRaw) {
+                core.info('approve action without pr_number: nothing to merge');
+                return;
+              }
+              const pull_number = Number(prRaw);
+              const pr = await github.rest.pulls.get({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                pull_number,
+              });
+              if (pr.data.draft) {
+                core.setFailed(`PR ${pull_number} is draft; mark ready for review first`);
+                return;
+              }
+              const headSha = pr.data.head.sha;
+              const checks = await github.rest.checks.listForRef({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                ref: headSha,
+                per_page: 100,
+              });
+              const checkRuns = checks.data.check_runs || [];
+              const failed = checkRuns.filter((c) => c.status === 'completed' && c.conclusion !== 'success' && c.conclusion !== 'skipped');
+              const pending = checkRuns.filter((c) => c.status !== 'completed');
+              if (failed.length > 0 || pending.length > 0) {
+                const msg = [
+                  `PR ${pull_number} checks are not green`,
+                  `failed=${failed.map((x) => x.name).join(',') || '-'}`,
+                  `pending=${pending.map((x) => x.name).join(',') || '-'}`,
+                ].join(' | ');
+                core.setFailed(msg);
+                return;
+              }
+              await github.rest.pulls.merge({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                pull_number,
+                merge_method: 'squash',
+              });
+              core.info(`Merged PR ${pull_number}`);
+              if (runIdRaw) {
+                const run_id = Number(runIdRaw);
+                try {
+                  await github.rest.actions.reRunWorkflowFailedJobs({
+                    owner: context.repo.owner,
+                    repo: context.repo.repo,
+                    run_id,
+                  });
+                  core.info(`Requested rerun-failed-jobs for run ${run_id}`);
+                } catch (e) {
+                  core.warning(`rerun-failed-jobs failed after merge, fallback to full rerun: ${e.message}`);
+                  await github.rest.actions.reRunWorkflow({
+                    owner: context.repo.owner,
+                    repo: context.repo.repo,
+                    run_id,
+                  });
+                  core.info(`Requested full rerun for run ${run_id}`);
+                }
+              }
+              return;
+            }
+
+            if (action === 'propose_fix') {
+              core.info('Dispatching incident-auto-fix workflow');
+              await github.rest.actions.createWorkflowDispatch({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                workflow_id: 'incident-auto-fix.yml',
+                ref: 'main',
+                inputs: {
+                  incident_id: incidentId,
+                  operation: operation,
+                  run_id: runIdRaw || '',
+                  summary: summary || '',
+                }
+              });
+              core.info('incident-auto-fix dispatched');
+              return;
+            }
+
+            core.setFailed(`Unsupported action: ${action}`);
+
+      - name: Telegram notify
+        if: always() && secrets.TELEGRAM_BOT_TOKEN != '' && vars.TELEGRAM_ADMIN_IDS != ''
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_ADMIN_IDS: ${{ vars.TELEGRAM_ADMIN_IDS }}
+          INCIDENT_ID: ${{ steps.handle_action.outputs.incident_id }}
+          ACTION_NAME: ${{ steps.handle_action.outputs.action }}
+          OPERATION: ${{ steps.handle_action.outputs.operation }}
+          SUMMARY: ${{ steps.handle_action.outputs.summary }}
+          RUN_URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          JOB_STATUS: ${{ job.status }}
+        run: |
+          CHAT_ID=$(python - <<'PY'
+          import json, os
+          raw = (os.getenv("TELEGRAM_ADMIN_IDS", "") or "").strip()
+          chat = ""
+          try:
+              if raw.startswith("["):
+                  arr = json.loads(raw)
+                  if arr:
+                      chat = str(arr[0])
+              elif "," in raw:
+                  chat = raw.split(",")[0].strip()
+              else:
+                  chat = raw
+          except Exception:
+              chat = raw
+          print(chat)
+          PY
+          )
+          if [ -z "$CHAT_ID" ]; then
+            exit 0
+          fi
+          TEXT="incident-handler: incident_id=${INCIDENT_ID}%0Aaction=${ACTION_NAME}%0Aoperation=${OPERATION}%0Astatus=${JOB_STATUS}%0Asummary=${SUMMARY:-n/a}%0Arun=${RUN_URL}"
+          curl -fsS -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+            -d "chat_id=${CHAT_ID}" \
+            -d "text=${TEXT}" >/dev/null

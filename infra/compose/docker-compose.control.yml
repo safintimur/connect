@@ -38,5 +38,42 @@ services:
     ports:
       - "80:8080"
 
+  control-bot:
+    build:
+      context: ../app
+      dockerfile: infra/compose/Dockerfile.control
+    container_name: connect-control-bot
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgresql+psycopg://connect:connect@postgres:5432/connect_control
+      BASE_SUBSCRIPTION_URL: ${BASE_SUBSCRIPTION_URL}
+      REALITY_PRIVATE_KEY: ${REALITY_PRIVATE_KEY}
+      REALITY_PUBLIC_KEY: ${REALITY_PUBLIC_KEY}
+      REALITY_SHORT_ID: ${REALITY_SHORT_ID}
+      REALITY_SERVER_NAME: ${REALITY_SERVER_NAME}
+      REALITY_DEST: ${REALITY_DEST}
+      VLESS_FLOW: ${VLESS_FLOW}
+      VLESS_FP: ${VLESS_FP}
+      DIGITALOCEAN_TOKEN: ${DIGITALOCEAN_TOKEN}
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN}
+      TELEGRAM_ADMIN_IDS: ${TELEGRAM_ADMIN_IDS}
+      TELEGRAM_SSH_KEY_PATH: ${TELEGRAM_SSH_KEY_PATH}
+      GITHUB_TOKEN: ${GITHUB_TOKEN}
+      GITHUB_REPOSITORY: ${GITHUB_REPOSITORY}
+      INCIDENT_AGENT_BACKEND: ${INCIDENT_AGENT_BACKEND}
+      INCIDENT_STORE_DIR: ${INCIDENT_STORE_DIR}
+    depends_on:
+      - postgres
+      - control-api
+    volumes:
+      - /opt/connect/shared:/opt/connect/shared
+      - /opt/connect/.ssh:/opt/connect/.ssh:ro
+    command:
+      [
+        "bash",
+        "-lc",
+        "if [ -z \"$TELEGRAM_BOT_TOKEN\" ] || [ -z \"$TELEGRAM_ADMIN_IDS\" ]; then echo 'control-bot disabled: TELEGRAM_BOT_TOKEN/TELEGRAM_ADMIN_IDS missing'; sleep infinity; else connectbot; fi",
+      ]
+
 volumes:
   postgres_data:

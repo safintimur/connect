@@ -84,6 +84,17 @@ def assign_user_to_node(session: Session, user: User, node: Node, profile: str =
     return assignment
 
 
+def get_active_assignments_for_node(session: Session, node: Node, profile: str = "smart") -> list[NodeAssignment]:
+    rows = session.scalars(
+        select(NodeAssignment).where(
+            NodeAssignment.node_id == node.id,
+            NodeAssignment.profile == profile,
+            NodeAssignment.status == AssignmentStatus.active,
+        )
+    )
+    return list(rows)
+
+
 def upsert_subscription(
     session: Session,
     user: User,
