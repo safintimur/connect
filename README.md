@@ -45,6 +45,10 @@ Re-run after user/node config changes:
 - Preflight checks: `.github/workflows/preflight.yml`
 - Control bootstrap: `.github/workflows/deploy.yml`
 - Worker deploy: `.github/workflows/deploy-worker.yml`
+- Nodes reboot operation: `.github/workflows/ops-nodes-reboot.yml`
+- Worker blue-green replacement: `.github/workflows/ops-worker-bluegreen.yml`
+- Incident handler (approve/retry helper): `.github/workflows/incident-handler.yml`
+- Incident fix proposal flow (draft PR from incident): `.github/workflows/incident-auto-fix.yml`
 
 ## Fast local test loop (no deploy)
 Run this before push:
@@ -68,6 +72,9 @@ Optional local GitHub Actions emulation with `act`:
 - `REALITY_PRIVATE_KEY`
 - `REALITY_PUBLIC_KEY`
 - `REALITY_SHORT_ID`
+- `TELEGRAM_BOT_TOKEN` (optional, enables control-bot)
+- `BOT_GITHUB_TOKEN` (optional, PAT for bot-triggered workflow actions)
+- `OPENAI_API_KEY` (required only when `INCIDENT_AGENT_BACKEND=codex-cloud`)
 
 ## Required GitHub variables
 - `BASE_SUBSCRIPTION_URL`
@@ -86,6 +93,29 @@ Optional local GitHub Actions emulation with `act`:
 - `WORKER_NODE_IMAGE` (recommended, default: `ubuntu-24-04-x64`)
 - `AUTO_RECREATE_INFRA` (`false` by default; set `true` only for forced replacement of matching droplets/firewalls)
 - optional: `REALITY_SERVER_NAME`, `REALITY_DEST`
+- optional: `TELEGRAM_ADMIN_IDS` (comma-separated numeric Telegram user IDs)
+- optional: `TELEGRAM_SSH_KEY_PATH` (default `/opt/connect/.ssh/id_ed25519`)
+- optional: `INCIDENT_AGENT_BACKEND` (default `proposal-only`; allowed values: `proposal-only`, `codex-cloud`, `cursor-cli`, `claude-code`)
+  - `codex-cloud` mode writes `docs/incidents/<incident_id>.codex.md` in incident PR via OpenAI Responses API.
+- optional: `INCIDENT_AUTO_APPLY_PATCH` (default `false`; if `true`, workflow attempts to apply ` ```diff ` block from codex analysis into incident PR branch)
+
+## Telegram admin bot
+- Service name: `control-bot` (in `infra/compose/docker-compose.control.yml`)
+- Library: `aiogram`
+- Entrypoint: `connectbot`
+- Access model: only IDs from `TELEGRAM_ADMIN_IDS`
+- Core commands:
+  - `/nodes_reboot`
+  - `/worker_replace`
+  - `/health`
+  - `/user_create <username> [display_name]`
+  - `/user_delete <username>`
+  - `/incident_status <incident_id>`
+  - `/approve <incident_id> [pr_number]`
+    - without `pr_number`: dispatches `propose_fix` (creates draft incident PR)
+    - with `pr_number`: dispatches merge approval for that PR
+  - `/deny <incident_id>`
+  - `/retry <incident_id>`
 
 ## Terraform state
 - CI uses remote Terraform state in DigitalOcean Spaces via S3 backend config (`infra/terraform/backend.hcl`, generated in workflow runtime).

@@ -1,0 +1,307 @@
+name: Incident Auto Fix Proposal
+
+on:
+  workflow_dispatch:
+    inputs:
+      incident_id:
+        description: "Incident id from bot"
+        required: true
+      operation:
+        description: "Operation name"
+        required: false
+        default: ""
+      run_id:
+        description: "Failed run id"
+        required: false
+        default: ""
+      summary:
+        description: "Failure summary"
+        required: false
+        default: ""
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  propose:
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'
+    env:
+      INCIDENT_AGENT_BACKEND: ${{ vars.INCIDENT_AGENT_BACKEND || 'proposal-only' }}
+      TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+      TELEGRAM_ADMIN_IDS: ${{ vars.TELEGRAM_ADMIN_IDS }}
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      INCIDENT_ID: ${{ github.event.inputs.incident_id }}
+      OPERATION: ${{ github.event.inputs.operation }}
+      RUN_ID: ${{ github.event.inputs.run_id }}
+      SUMMARY: ${{ github.event.inputs.summary }}
+      INCIDENT_AUTO_APPLY_PATCH: ${{ vars.INCIDENT_AUTO_APPLY_PATCH || 'false' }}
+      RUN_URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
+    steps:
+      - name: Notify started
+        if: env.TELEGRAM_BOT_TOKEN != '' && env.TELEGRAM_ADMIN_IDS != ''
+        run: |
+          CHAT_ID=$(python - <<'PY'
+          import json, os
+          raw=(os.getenv("TELEGRAM_ADMIN_IDS","") or "").strip()
+          try:
+              if raw.startswith("["): print(str(json.loads(raw)[0])); raise SystemExit
+              if "," in raw: print(raw.split(",")[0].strip()); raise SystemExit
+          except Exception:
+              pass
+          print(raw)
+          PY
+          )
+          [ -z "$CHAT_ID" ] && exit 0
+          TEXT="incident ${INCIDENT_ID}: auto-fix started%0Aoperation=${OPERATION}%0Aagent_backend=${INCIDENT_AGENT_BACKEND}%0Aauto_apply=${INCIDENT_AUTO_APPLY_PATCH}%0Arun=${RUN_URL}"
+          curl -fsS -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" -d "chat_id=${CHAT_ID}" -d "text=${TEXT}" >/dev/null
+
+      - name: Validate agent backend
+        run: |
+          case "${INCIDENT_AGENT_BACKEND}" in
+            proposal-only|codex-cloud|cursor-cli|claude-code) ;;
+            *)
+              echo "Unsupported INCIDENT_AGENT_BACKEND=${INCIDENT_AGENT_BACKEND}" >&2
+              exit 1
+              ;;
+          esac
+          if [ "${INCIDENT_AGENT_BACKEND}" = "codex-cloud" ] && [ -z "${OPENAI_API_KEY}" ]; then
+            echo "OPENAI_API_KEY is required for codex-cloud backend" >&2
+            exit 1
+          fi
+
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - name: Prepare fix proposal artifact
+        run: |
+          mkdir -p docs/incidents
+          cat > "docs/incidents/${INCIDENT_ID}.md" <<EOF
+          # Incident ${INCIDENT_ID}
+
+          - operation: ${OPERATION}
+          - failed_run_id: ${RUN_ID}
+          - summary: ${SUMMARY}
+          - agent_backend: ${INCIDENT_AGENT_BACKEND}
+          - created_by: incident-auto-fix workflow
+
+          ## Required Actions
+
+          1. Inspect failed run logs and identify root cause.
+          2. Prepare minimal code/config fix.
+          3. Validate with local checks and/or workflow rerun.
+          4. Merge only after explicit approval in Telegram.
+          EOF
+
+      - name: Notify codex analyzing
+        if: env.INCIDENT_AGENT_BACKEND == 'codex-cloud' && env.TELEGRAM_BOT_TOKEN != '' && env.TELEGRAM_ADMIN_IDS != ''
+        run: |
+          CHAT_ID=$(python - <<'PY'
+          import json, os
+          raw=(os.getenv("TELEGRAM_ADMIN_IDS","") or "").strip()
+          try:
+              if raw.startswith("["): print(str(json.loads(raw)[0])); raise SystemExit
+              if "," in raw: print(raw.split(",")[0].strip()); raise SystemExit
+          except Exception:
+              pass
+          print(raw)
+          PY
+          )
+          [ -z "$CHAT_ID" ] && exit 0
+          TEXT="incident ${INCIDENT_ID}: codex analyzing%0Asummary=${SUMMARY}%0Arun=${RUN_URL}"
+          curl -fsS -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" -d "chat_id=${CHAT_ID}" -d "text=${TEXT}" >/dev/null
+
+      - name: Codex cloud analysis artifact
+        if: env.INCIDENT_AGENT_BACKEND == 'codex-cloud'
+        env:
+          REPO: ${{ github.repository }}
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          import subprocess
+          import urllib.request
+
+          incident_id = os.environ["INCIDENT_ID"]
+          summary = os.environ.get("SUMMARY", "")
+          operation = os.environ.get("OPERATION", "")
+          run_id = os.environ.get("RUN_ID", "")
+          repo = os.environ.get("REPO", "")
+          key = os.environ.get("OPENAI_API_KEY", "")
+
+          files = subprocess.check_output(["git", "ls-files"], text=True).splitlines()
+          file_list = "\n".join(files[:250])
+
+          prompt = f"""
+          You are incident response coding assistant for repository {repo}.
+          Incident ID: {incident_id}
+          Operation: {operation}
+          Failed run id: {run_id}
+          Summary: {summary}
+
+          Repository files (truncated):
+          {file_list}
+
+          Provide:
+          1) Root-cause hypotheses (short).
+          2) Concrete minimal fix plan with file paths.
+          3) Optional candidate unified diff inside one fenced block ```diff ... ``` (if confident), otherwise say "no-safe-diff".
+          4) Validation steps for GitHub Actions.
+
+          Keep output plain markdown.
+          """
+
+          payload = {
+              "model": "gpt-5.2",
+              "reasoning": {"effort": "medium"},
+              "input": prompt,
+          }
+
+          req = urllib.request.Request(
+              "https://api.openai.com/v1/responses",
+              data=json.dumps(payload).encode("utf-8"),
+              method="POST",
+              headers={
+                  "Authorization": f"Bearer {key}",
+                  "Content-Type": "application/json",
+              },
+          )
+          with urllib.request.urlopen(req, timeout=120) as resp:
+              data = json.loads(resp.read().decode("utf-8"))
+
+          text = data.get("output_text")
+          if not text:
+              out = data.get("output", [])
+              chunks = []
+              for item in out:
+                  for c in item.get("content", []):
+                      t = c.get("text")
+                      if t:
+                          chunks.append(t)
+              text = "\n".join(chunks).strip()
+          if not text:
+              text = "Codex analysis returned empty output."
+
+          path = f"docs/incidents/{incident_id}.codex.md"
+          with open(path, "w", encoding="utf-8") as f:
+              f.write(text.rstrip() + "\n")
+          print(f"written: {path}")
+          PY
+
+      - name: Notify codex done
+        if: env.INCIDENT_AGENT_BACKEND == 'codex-cloud' && env.TELEGRAM_BOT_TOKEN != '' && env.TELEGRAM_ADMIN_IDS != ''
+        run: |
+          CHAT_ID=$(python - <<'PY'
+          import json, os
+          raw=(os.getenv("TELEGRAM_ADMIN_IDS","") or "").strip()
+          try:
+              if raw.startswith("["): print(str(json.loads(raw)[0])); raise SystemExit
+              if "," in raw: print(raw.split(",")[0].strip()); raise SystemExit
+          except Exception:
+              pass
+          print(raw)
+          PY
+          )
+          [ -z "$CHAT_ID" ] && exit 0
+          TEXT="incident ${INCIDENT_ID}: codex analysis ready%0Aartifact=docs/incidents/${INCIDENT_ID}.codex.md"
+          curl -fsS -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" -d "chat_id=${CHAT_ID}" -d "text=${TEXT}" >/dev/null
+
+      - name: Attempt auto-apply patch from codex analysis
+        if: env.INCIDENT_AGENT_BACKEND == 'codex-cloud' && env.INCIDENT_AUTO_APPLY_PATCH == 'true'
+        run: |
+          python - <<'PY'
+          import os
+          import re
+          import subprocess
+          from pathlib import Path
+
+          incident_id = os.environ["INCIDENT_ID"]
+          md_path = Path(f"docs/incidents/{incident_id}.codex.md")
+          if not md_path.exists():
+            print("analysis file missing; skip auto-apply")
+            raise SystemExit(0)
+          text = md_path.read_text(encoding="utf-8")
+          m = re.search(r"```diff\\n(.*?)\\n```", text, flags=re.S)
+          if not m:
+            print("no diff block found; skip auto-apply")
+            raise SystemExit(0)
+          patch = m.group(1).strip() + "\\n"
+          patch_path = Path(f"/tmp/{incident_id}.patch")
+          patch_path.write_text(patch, encoding="utf-8")
+          applied = subprocess.run(["git", "apply", "--index", "--3way", str(patch_path)], capture_output=True, text=True)
+          if applied.returncode != 0:
+            print("patch apply failed; keep proposal-only")
+            print(applied.stdout)
+            print(applied.stderr)
+            raise SystemExit(0)
+          print("patch applied and staged")
+          PY
+
+      - name: Notify writing PR
+        if: env.TELEGRAM_BOT_TOKEN != '' && env.TELEGRAM_ADMIN_IDS != ''
+        run: |
+          CHAT_ID=$(python - <<'PY'
+          import json, os
+          raw=(os.getenv("TELEGRAM_ADMIN_IDS","") or "").strip()
+          try:
+              if raw.startswith("["): print(str(json.loads(raw)[0])); raise SystemExit
+              if "," in raw: print(raw.split(",")[0].strip()); raise SystemExit
+          except Exception:
+              pass
+          print(raw)
+          PY
+          )
+          [ -z "$CHAT_ID" ] && exit 0
+          TEXT="incident ${INCIDENT_ID}: writing PR"
+          curl -fsS -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" -d "chat_id=${CHAT_ID}" -d "text=${TEXT}" >/dev/null
+
+      - name: Create proposal PR
+        uses: peter-evans/create-pull-request@v7
+        id: cpr
+        with:
+          branch: "auto/incident-${{ github.event.inputs.incident_id }}"
+          commit-message: "incident: propose fix plan for ${{ github.event.inputs.incident_id }}"
+          title: "incident: ${{ github.event.inputs.incident_id }} fix proposal"
+          body: |
+            Auto-generated incident proposal.
+
+            - operation: `${{ github.event.inputs.operation }}`
+            - failed run: `${{ github.event.inputs.run_id }}`
+            - summary: `${{ github.event.inputs.summary }}`
+            - agent backend: `${{ vars.INCIDENT_AGENT_BACKEND || 'proposal-only' }}`
+
+            If backend is `codex-cloud`, this PR also contains `docs/incidents/<incident_id>.codex.md` with machine-generated fix analysis.
+            If `INCIDENT_AUTO_APPLY_PATCH=true` and a safe diff block was returned, patch is auto-applied in this PR branch.
+            Merge only after manual review and explicit Telegram approval via `/approve <incident_id> <pr_number>`.
+          draft: true
+          labels: |
+            incident
+            needs-triage
+
+      - name: Print PR url
+        run: |
+          echo "PR: ${{ steps.cpr.outputs.pull-request-url }}"
+
+      - name: Notify completed
+        if: always() && env.TELEGRAM_BOT_TOKEN != '' && env.TELEGRAM_ADMIN_IDS != ''
+        env:
+          PR_URL: ${{ steps.cpr.outputs.pull-request-url }}
+          JOB_STATUS: ${{ job.status }}
+        run: |
+          CHAT_ID=$(python - <<'PY'
+          import json, os
+          raw=(os.getenv("TELEGRAM_ADMIN_IDS","") or "").strip()
+          try:
+              if raw.startswith("["): print(str(json.loads(raw)[0])); raise SystemExit
+              if "," in raw: print(raw.split(",")[0].strip()); raise SystemExit
+          except Exception:
+              pass
+          print(raw)
+          PY
+          )
+          [ -z "$CHAT_ID" ] && exit 0
+          TEXT="incident ${INCIDENT_ID}: waiting approve%0Astatus=${JOB_STATUS}%0Abackend=${INCIDENT_AGENT_BACKEND}%0Apr=${PR_URL:-n/a}%0Arun=${RUN_URL}"
+          curl -fsS -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" -d "chat_id=${CHAT_ID}" -d "text=${TEXT}" >/dev/null

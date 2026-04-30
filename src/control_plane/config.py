@@ -35,5 +35,23 @@ class Settings(BaseSettings):
     vless_flow: str = Field(default="xtls-rprx-vision", alias="VLESS_FLOW")
     vless_fp: str = Field(default="chrome", alias="VLESS_FP")
 
+    telegram_bot_token: str = Field(default="", alias="TELEGRAM_BOT_TOKEN")
+    telegram_admin_ids_raw: str = Field(default="", alias="TELEGRAM_ADMIN_IDS")
+    telegram_ssh_key_path: str = Field(default="/opt/connect/.ssh/id_ed25519", alias="TELEGRAM_SSH_KEY_PATH")
+
+    github_token: str = Field(default="", alias="GITHUB_TOKEN")
+    github_repository: str = Field(default="", alias="GITHUB_REPOSITORY")
+    incident_agent_backend: str = Field(default="proposal-only", alias="INCIDENT_AGENT_BACKEND")
+    incident_store_dir: str = Field(default="/opt/connect/shared/incidents", alias="INCIDENT_STORE_DIR")
+    worker_replace_old_node_name: str = Field(default="connect-worker-uk-1", alias="WORKER_REPLACE_OLD_NODE_NAME")
+
+    @property
+    def telegram_admin_ids(self) -> set[int]:
+        raw = [x.strip() for x in self.telegram_admin_ids_raw.split(",") if x.strip()]
+        result: set[int] = set()
+        for value in raw:
+            result.add(int(value))
+        return result
+
 
 settings = Settings()

@@ -2,6 +2,11 @@ name: Worker Deploy
 
 on:
   workflow_dispatch:
+    inputs:
+      auto_recreate:
+        description: "Set true to cleanup and recreate worker resources first"
+        required: false
+        default: "false"
 
 concurrency:
   group: connect-infra-prod
@@ -24,7 +29,7 @@ jobs:
       WORKER_NODE_REGION: ${{ vars.WORKER_NODE_REGION || 'lon1' }}
       WORKER_NODE_SIZE: ${{ vars.WORKER_NODE_SIZE || 's-1vcpu-1gb' }}
       WORKER_NODE_IMAGE: ${{ vars.WORKER_NODE_IMAGE || 'ubuntu-24-04-x64' }}
-      AUTO_RECREATE_INFRA: ${{ vars.AUTO_RECREATE_INFRA || 'false' }}
+      AUTO_RECREATE_INFRA: ${{ github.event.inputs.auto_recreate || vars.AUTO_RECREATE_INFRA || 'false' }}
       TF_STATE_BUCKET: ${{ vars.TF_STATE_BUCKET || 'connect-space-bucket' }}
       TF_STATE_REGION: ${{ vars.TF_STATE_REGION || 'lon1' }}
       TF_STATE_KEY_PREFIX: ${{ vars.TF_STATE_KEY_PREFIX || 'connect-prod' }}
@@ -37,7 +42,11 @@ jobs:
       REALITY_DEST: ${{ vars.REALITY_DEST || 'www.cloudflare.com:443' }}
       VLESS_FLOW: xtls-rprx-vision
       VLESS_FP: chrome
-      ADMIN_CIDRS_JSON: ${{ vars.ADMIN_CIDRS_JSON }}
+      ADMIN_CIDRS_JSON: ${{ vars.ADMIN_CIDRS_JSON || '[]' }}
+      TELEGRAM_ADMIN_IDS: ${{ vars.TELEGRAM_ADMIN_IDS || '' }}
+      TELEGRAM_SSH_KEY_PATH: ${{ vars.TELEGRAM_SSH_KEY_PATH || '/opt/connect/.ssh/id_ed25519' }}
+      INCIDENT_AGENT_BACKEND: ${{ vars.INCIDENT_AGENT_BACKEND || 'proposal-only' }}
+      GITHUB_REPOSITORY: ${{ github.repository }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -90,6 +99,16 @@ jobs:
           sed -i "s#^REALITY_DEST=.*#REALITY_DEST=${REALITY_DEST}#" .env
           sed -i "s#^VLESS_FLOW=.*#VLESS_FLOW=${VLESS_FLOW}#" .env
           sed -i "s#^VLESS_FP=.*#VLESS_FP=${VLESS_FP}#" .env
+          sed -i "s#^TELEGRAM_ADMIN_IDS=.*#TELEGRAM_ADMIN_IDS=${TELEGRAM_ADMIN_IDS}#" .env
+          sed -i "s#^TELEGRAM_SSH_KEY_PATH=.*#TELEGRAM_SSH_KEY_PATH=${TELEGRAM_SSH_KEY_PATH}#" .env
+          sed -i "s#^GITHUB_REPOSITORY=.*#GITHUB_REPOSITORY=${GITHUB_REPOSITORY}#" .env
+          sed -i "s#^INCIDENT_AGENT_BACKEND=.*#INCIDENT_AGENT_BACKEND=${INCIDENT_AGENT_BACKEND}#" .env
+          if [ -n "${{ secrets.TELEGRAM_BOT_TOKEN }}" ]; then
+            sed -i "s#^TELEGRAM_BOT_TOKEN=.*#TELEGRAM_BOT_TOKEN=${{ secrets.TELEGRAM_BOT_TOKEN }}#" .env
+          fi
+          if [ -n "${{ secrets.BOT_GITHUB_TOKEN }}" ]; then
+            sed -i "s#^GITHUB_TOKEN=.*#GITHUB_TOKEN=${{ secrets.BOT_GITHUB_TOKEN }}#" .env
+          fi
 
       - name: Prepare SSH key for Ansible
         run: |

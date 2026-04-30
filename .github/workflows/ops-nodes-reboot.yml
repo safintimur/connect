@@ -1,20 +1,23 @@
-name: Control Bootstrap
+name: Nodes Reboot
 
 on:
   workflow_dispatch:
+    inputs:
+      reason:
+        description: "Reboot reason"
+        required: false
+        default: "manual"
 
 concurrency:
   group: connect-infra-prod
   cancel-in-progress: false
 
 jobs:
-  deploy:
+  reboot:
     runs-on: ubuntu-latest
     environment: prod
     if: github.ref == 'refs/heads/main'
     env:
-      DATABASE_URL: postgresql+psycopg://connect:connect@postgres:5432/connect_control
-      BASE_SUBSCRIPTION_URL: ${{ vars.BASE_SUBSCRIPTION_URL }}
       PROJECT_NAME: ${{ vars.PROJECT_NAME || 'connect-core' }}
       CONTROL_NODE_NAME: ${{ vars.CONTROL_NODE_NAME || 'connect-control-1' }}
       CONTROL_NODE_REGION: ${{ vars.CONTROL_NODE_REGION || 'lon1' }}
@@ -24,24 +27,12 @@ jobs:
       WORKER_NODE_REGION: ${{ vars.WORKER_NODE_REGION || 'lon1' }}
       WORKER_NODE_SIZE: ${{ vars.WORKER_NODE_SIZE || 's-1vcpu-1gb' }}
       WORKER_NODE_IMAGE: ${{ vars.WORKER_NODE_IMAGE || 'ubuntu-24-04-x64' }}
-      AUTO_RECREATE_INFRA: ${{ vars.AUTO_RECREATE_INFRA || 'false' }}
       TF_STATE_BUCKET: ${{ vars.TF_STATE_BUCKET || 'connect-space-bucket' }}
       TF_STATE_REGION: ${{ vars.TF_STATE_REGION || 'lon1' }}
       TF_STATE_KEY_PREFIX: ${{ vars.TF_STATE_KEY_PREFIX || 'connect-prod' }}
+      ADMIN_CIDRS_JSON: ${{ vars.ADMIN_CIDRS_JSON || '[]' }}
       AWS_ACCESS_KEY_ID: ${{ secrets.DO_SPACES_ACCESS_KEY_ID }}
       AWS_SECRET_ACCESS_KEY: ${{ secrets.DO_SPACES_SECRET_ACCESS_KEY }}
-      REALITY_PRIVATE_KEY: ${{ secrets.REALITY_PRIVATE_KEY }}
-      REALITY_PUBLIC_KEY: ${{ secrets.REALITY_PUBLIC_KEY }}
-      REALITY_SHORT_ID: ${{ secrets.REALITY_SHORT_ID }}
-      REALITY_SERVER_NAME: ${{ vars.REALITY_SERVER_NAME || 'www.cloudflare.com' }}
-      REALITY_DEST: ${{ vars.REALITY_DEST || 'www.cloudflare.com:443' }}
-      VLESS_FLOW: xtls-rprx-vision
-      VLESS_FP: chrome
-      ADMIN_CIDRS_JSON: ${{ vars.ADMIN_CIDRS_JSON || '[]' }}
-      TELEGRAM_ADMIN_IDS: ${{ vars.TELEGRAM_ADMIN_IDS || '' }}
-      TELEGRAM_SSH_KEY_PATH: ${{ vars.TELEGRAM_SSH_KEY_PATH || '/opt/connect/.ssh/id_ed25519' }}
-      INCIDENT_AGENT_BACKEND: ${{ vars.INCIDENT_AGENT_BACKEND || 'proposal-only' }}
-      GITHUB_REPOSITORY: ${{ github.repository }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -54,21 +45,14 @@ jobs:
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3
 
-      - name: Install runtime tools
+      - name: Install tools
         run: |
           python -m pip install --upgrade pip
           pip install .
           sudo apt-get update
           sudo apt-get install -y ansible jq openssh-client
 
-      - name: Validate admin CIDRs
-        run: |
-          python scripts/validate-admin-cidrs.py
-
       - name: Configure Terraform backend (DO Spaces)
-        env:
-          AWS_ACCESS_KEY_ID: ${{ secrets.DO_SPACES_ACCESS_KEY_ID }}
-          AWS_SECRET_ACCESS_KEY: ${{ secrets.DO_SPACES_SECRET_ACCESS_KEY }}
         run: |
           cat > infra/terraform/backend.hcl <<EOF_BACKEND
           bucket = "${TF_STATE_BUCKET}"
@@ -81,29 +65,6 @@ jobs:
           use_path_style = false
           use_lockfile = true
           EOF_BACKEND
-
-      - name: Prepare runtime .env
-        run: |
-          cp .env.example .env
-          sed -i "s#^DATABASE_URL=.*#DATABASE_URL=${DATABASE_URL}#" .env
-          sed -i "s#^BASE_SUBSCRIPTION_URL=.*#BASE_SUBSCRIPTION_URL=${BASE_SUBSCRIPTION_URL}#" .env
-          sed -i "s#^REALITY_PRIVATE_KEY=.*#REALITY_PRIVATE_KEY=${REALITY_PRIVATE_KEY}#" .env
-          sed -i "s#^REALITY_PUBLIC_KEY=.*#REALITY_PUBLIC_KEY=${REALITY_PUBLIC_KEY}#" .env
-          sed -i "s#^REALITY_SHORT_ID=.*#REALITY_SHORT_ID=${REALITY_SHORT_ID}#" .env
-          sed -i "s#^REALITY_SERVER_NAME=.*#REALITY_SERVER_NAME=${REALITY_SERVER_NAME}#" .env
-          sed -i "s#^REALITY_DEST=.*#REALITY_DEST=${REALITY_DEST}#" .env
-          sed -i "s#^VLESS_FLOW=.*#VLESS_FLOW=${VLESS_FLOW}#" .env
-          sed -i "s#^VLESS_FP=.*#VLESS_FP=${VLESS_FP}#" .env
-          sed -i "s#^TELEGRAM_ADMIN_IDS=.*#TELEGRAM_ADMIN_IDS=${TELEGRAM_ADMIN_IDS}#" .env
-          sed -i "s#^TELEGRAM_SSH_KEY_PATH=.*#TELEGRAM_SSH_KEY_PATH=${TELEGRAM_SSH_KEY_PATH}#" .env
-          sed -i "s#^GITHUB_REPOSITORY=.*#GITHUB_REPOSITORY=${GITHUB_REPOSITORY}#" .env
-          sed -i "s#^INCIDENT_AGENT_BACKEND=.*#INCIDENT_AGENT_BACKEND=${INCIDENT_AGENT_BACKEND}#" .env
-          if [ -n "${{ secrets.TELEGRAM_BOT_TOKEN }}" ]; then
-            sed -i "s#^TELEGRAM_BOT_TOKEN=.*#TELEGRAM_BOT_TOKEN=${{ secrets.TELEGRAM_BOT_TOKEN }}#" .env
-          fi
-          if [ -n "${{ secrets.BOT_GITHUB_TOKEN }}" ]; then
-            sed -i "s#^GITHUB_TOKEN=.*#GITHUB_TOKEN=${{ secrets.BOT_GITHUB_TOKEN }}#" .env
-          fi
 
       - name: Prepare SSH key for Ansible
         run: |
@@ -120,27 +81,24 @@ jobs:
       - name: Build effective admin CIDRs (runner only)
         run: |
           export RUNNER_IP="$(curl -4 -fsSL https://api.ipify.org)"
-          echo "Runner public IP: ${RUNNER_IP}"
           python - <<'PY'
           import ipaddress
           import json
           import os
 
-          runner_ip = os.environ["RUNNER_IP"]
-          effective = [f"{runner_ip}/32"]
+          effective = [f"{os.environ['RUNNER_IP']}/32"]
           ipaddress.ip_network(effective[0], strict=False)
-
           with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as f:
-              f.write(f"ADMIN_CIDRS_EFFECTIVE_JSON={json.dumps(effective)}\n")
+              f.write(f"ADMIN_CIDRS_EFFECTIVE_JSON={json.dumps(effective)}\\n")
           PY
 
-      - name: Build terraform.tfvars from secrets
+      - name: Build terraform.tfvars
         run: |
           cat > infra/terraform/terraform.tfvars <<EOFVARS
           do_token = "${{ secrets.DIGITALOCEAN_TOKEN }}"
           project_name = "${PROJECT_NAME}"
           create_control = true
-          create_worker = false
+          create_worker = true
           ssh_key_fingerprints = ["${{ secrets.DO_SSH_KEY_FINGERPRINT }}"]
           control_node_name = "${CONTROL_NODE_NAME}"
           control_node_region = "${CONTROL_NODE_REGION}"
@@ -153,21 +111,22 @@ jobs:
           allowed_admin_cidrs = ${ADMIN_CIDRS_EFFECTIVE_JSON}
           EOFVARS
 
-      - name: Cleanup existing control resources (auto-recreate)
-        if: env.AUTO_RECREATE_INFRA == 'true'
+      - name: Refresh inventory from state
         env:
-          DIGITALOCEAN_TOKEN: ${{ secrets.DIGITALOCEAN_TOKEN }}
-          CREATE_CONTROL: "true"
-          CREATE_WORKER: "false"
-        run: |
-          python scripts/cleanup-do-resources.py
-
-      - name: Check required environment
-        run: make check-env
-
-      - name: Control bootstrap process
-        env:
-          ANSIBLE_HOST_KEY_CHECKING: "False"
           TF_BACKEND_CONFIG_FILE: backend.hcl
         run: |
-          make control-bootstrap
+          make tf-init
+          make tf-apply
+          make render-inventory
+
+      - name: Reboot control and worker nodes
+        env:
+          ANSIBLE_HOST_KEY_CHECKING: "False"
+        run: |
+          ansible all -i infra/ansible/inventory.generated.ini -b -m reboot -a "reboot_timeout=900 msg='connect bot reboot (${{ github.event.inputs.reason }})'"
+
+      - name: Wait for SSH readiness after reboot
+        env:
+          ANSIBLE_HOST_KEY_CHECKING: "False"
+        run: |
+          ansible all -i infra/ansible/inventory.generated.ini -m wait_for_connection -a "timeout=900"

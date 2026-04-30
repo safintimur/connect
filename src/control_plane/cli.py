@@ -2,12 +2,15 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from datetime import datetime, timezone
 
 import typer
 from alembic import command
 from alembic.config import Config
+from sqlalchemy import select
 
 from .db import session_scope
+from .models import AssignmentStatus, NodeAssignment
 from .providers.do_provider import DOProvider, DropletSpec
 from .repositories import add_audit_event, assign_user_to_node, get_node_by_name, get_user_by_username
 from .services.node_service import register_node, set_node_status, upsert_node
@@ -44,6 +47,25 @@ def user_disable(username: str, actor: str = typer.Option("admin")) -> None:
     typer.echo(f"User disabled: {user.username}")
 
 
+@app.command("user-delete")
+def user_delete(username: str, actor: str = typer.Option("admin")) -> None:
+    with session_scope() as session:
+        user = get_user_by_username(session, username)
+        if not user:
+            raise typer.BadParameter(f"User '{username}' not found")
+        user_id = str(user.id)
+        session.delete(user)
+        add_audit_event(
+            session,
+            actor=actor,
+            action="user.delete",
+            entity_type="user",
+            entity_id=user_id,
+            metadata={"username": username},
+        )
+    typer.echo(f"User deleted: {username}")
+
+
 @app.command("node-register")
 def node_register(
     name: str,
@@ -73,6 +95,24 @@ def node_status(name: str, status: str, actor: str = typer.Option("admin")) -> N
     with session_scope() as session:
         set_node_status(session, name=name, status=status, actor=actor)
     typer.echo(f"Node status updated: {name} -> {status}")
+
+
+@app.command("node-info")
+def node_info(name: str) -> None:
+    with session_scope() as session:
+        node = get_node_by_name(session, name)
+        if not node:
+            raise typer.BadParameter(f"Node '{name}' not found")
+        payload = {
+            "name": node.name,
+            "role": node.role.value,
+            "status": node.status.value,
+            "country": node.country,
+            "provider": node.provider,
+            "provider_node_id": node.provider_node_id,
+            "public_ip": node.public_ip,
+        }
+    typer.echo(json.dumps(payload, ensure_ascii=True))
 
 
 @app.command("node-upsert")
@@ -189,7 +229,21 @@ def do_create_worker(
             tags=["connect", "worker", "uk"],
         )
     )
-    typer.echo(str(droplet))
+    typer.echo(json.dumps(droplet, ensure_ascii=True))
+
+
+@app.command("do-get-worker")
+def do_get_worker(droplet_id: int) -> None:
+    provider = DOProvider()
+    payload = provider.get_droplet(droplet_id=droplet_id)
+    typer.echo(json.dumps(payload, ensure_ascii=True))
+
+
+@app.command("do-delete-worker")
+def do_delete_worker(droplet_id: int) -> None:
+    provider = DOProvider()
+    payload = provider.delete_droplet(droplet_id=droplet_id)
+    typer.echo(json.dumps(payload, ensure_ascii=True))
 
 
 @app.command("xray-render-node-config")
@@ -214,6 +268,59 @@ def xray_render_node_config(
         return
 
     typer.echo(rendered)
+
+
+@app.command("worker-cutover-smart")
+def worker_cutover_smart(
+    old_node_name: str,
+    new_node_name: str,
+    node_port: int = typer.Option(443),
+    actor: str = typer.Option("automation"),
+) -> None:
+    moved = 0
+    with session_scope() as session:
+        old_node = get_node_by_name(session, old_node_name)
+        if not old_node:
+            raise typer.BadParameter(f"Old node '{old_node_name}' not found")
+        new_node = get_node_by_name(session, new_node_name)
+        if not new_node or not new_node.public_ip:
+            raise typer.BadParameter(f"New node '{new_node_name}' not found or has no public_ip")
+
+        assignments = list(
+            session.scalars(
+                select(NodeAssignment).where(
+                    NodeAssignment.node_id == old_node.id,
+                    NodeAssignment.profile == "smart",
+                    NodeAssignment.status == AssignmentStatus.active,
+                )
+            )
+        )
+
+        for old in assignments:
+            old.status = AssignmentStatus.inactive
+            old.unassigned_at = datetime.now(timezone.utc)
+
+            user = old.user
+            assign_user_to_node(session, user=user, node=new_node, profile="smart")
+            build_or_update_smart_subscription(
+                session=session,
+                user=user,
+                node_host=new_node.public_ip,
+                node_port=node_port,
+                connect_uuid=str(user.connect_uuid),
+            )
+            moved += 1
+
+        add_audit_event(
+            session,
+            actor=actor,
+            action="worker.cutover.smart",
+            entity_type="node",
+            entity_id=str(new_node.id),
+            metadata={"old_node": old_node_name, "new_node": new_node_name, "moved_users": moved},
+        )
+
+    typer.echo(f"Cutover complete: moved {moved} user(s) {old_node_name} -> {new_node_name}")
 
 
 if __name__ == "__main__":

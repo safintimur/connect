@@ -1,0 +1,256 @@
+name: Worker Blue-Green Replace
+
+on:
+  workflow_dispatch:
+    inputs:
+      old_worker_name:
+        description: "Existing worker node name in control DB"
+        required: false
+        default: "connect-worker-uk-1"
+
+concurrency:
+  group: connect-infra-prod
+  cancel-in-progress: false
+
+jobs:
+  bluegreen:
+    runs-on: ubuntu-latest
+    environment: prod
+    if: github.ref == 'refs/heads/main'
+    env:
+      DATABASE_URL: postgresql+psycopg://connect:connect@postgres:5432/connect_control
+      BASE_SUBSCRIPTION_URL: ${{ vars.BASE_SUBSCRIPTION_URL }}
+      PROJECT_NAME: ${{ vars.PROJECT_NAME || 'connect-core' }}
+      CONTROL_NODE_NAME: ${{ vars.CONTROL_NODE_NAME || 'connect-control-1' }}
+      CONTROL_NODE_REGION: ${{ vars.CONTROL_NODE_REGION || 'lon1' }}
+      CONTROL_NODE_SIZE: ${{ vars.CONTROL_NODE_SIZE || 's-1vcpu-1gb' }}
+      CONTROL_NODE_IMAGE: ${{ vars.CONTROL_NODE_IMAGE || 'ubuntu-24-04-x64' }}
+      WORKER_NODE_REGION: ${{ vars.WORKER_NODE_REGION || 'lon1' }}
+      WORKER_NODE_SIZE: ${{ vars.WORKER_NODE_SIZE || 's-1vcpu-1gb' }}
+      WORKER_NODE_IMAGE: ${{ vars.WORKER_NODE_IMAGE || 'ubuntu-24-04-x64' }}
+      TF_STATE_BUCKET: ${{ vars.TF_STATE_BUCKET || 'connect-space-bucket' }}
+      TF_STATE_REGION: ${{ vars.TF_STATE_REGION || 'lon1' }}
+      TF_STATE_KEY_PREFIX: ${{ vars.TF_STATE_KEY_PREFIX || 'connect-prod' }}
+      AWS_ACCESS_KEY_ID: ${{ secrets.DO_SPACES_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.DO_SPACES_SECRET_ACCESS_KEY }}
+      DIGITALOCEAN_TOKEN: ${{ secrets.DIGITALOCEAN_TOKEN }}
+      REALITY_PRIVATE_KEY: ${{ secrets.REALITY_PRIVATE_KEY }}
+      REALITY_PUBLIC_KEY: ${{ secrets.REALITY_PUBLIC_KEY }}
+      REALITY_SHORT_ID: ${{ secrets.REALITY_SHORT_ID }}
+      REALITY_SERVER_NAME: ${{ vars.REALITY_SERVER_NAME || 'www.cloudflare.com' }}
+      REALITY_DEST: ${{ vars.REALITY_DEST || 'www.cloudflare.com:443' }}
+      VLESS_FLOW: xtls-rprx-vision
+      VLESS_FP: chrome
+      ADMIN_CIDRS_JSON: ${{ vars.ADMIN_CIDRS_JSON || '[]' }}
+      OLD_WORKER_NAME: ${{ github.event.inputs.old_worker_name || 'connect-worker-uk-1' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+
+      - name: Install runtime tools
+        run: |
+          python -m pip install --upgrade pip
+          pip install .
+          sudo apt-get update
+          sudo apt-get install -y ansible jq openssh-client
+
+      - name: Configure Terraform backend (DO Spaces)
+        run: |
+          cat > infra/terraform/backend.hcl <<EOF_BACKEND
+          bucket = "${TF_STATE_BUCKET}"
+          key = "${TF_STATE_KEY_PREFIX}/infra/terraform.tfstate"
+          region = "${TF_STATE_REGION}"
+          endpoints = { s3 = "https://${TF_STATE_REGION}.digitaloceanspaces.com" }
+          skip_region_validation = true
+          skip_credentials_validation = true
+          skip_requesting_account_id = true
+          use_path_style = false
+          use_lockfile = true
+          EOF_BACKEND
+
+      - name: Prepare runtime .env
+        run: |
+          cp .env.example .env
+          sed -i "s#^DATABASE_URL=.*#DATABASE_URL=${DATABASE_URL}#" .env
+          sed -i "s#^BASE_SUBSCRIPTION_URL=.*#BASE_SUBSCRIPTION_URL=${BASE_SUBSCRIPTION_URL}#" .env
+          sed -i "s#^REALITY_PRIVATE_KEY=.*#REALITY_PRIVATE_KEY=${REALITY_PRIVATE_KEY}#" .env
+          sed -i "s#^REALITY_PUBLIC_KEY=.*#REALITY_PUBLIC_KEY=${REALITY_PUBLIC_KEY}#" .env
+          sed -i "s#^REALITY_SHORT_ID=.*#REALITY_SHORT_ID=${REALITY_SHORT_ID}#" .env
+          sed -i "s#^REALITY_SERVER_NAME=.*#REALITY_SERVER_NAME=${REALITY_SERVER_NAME}#" .env
+          sed -i "s#^REALITY_DEST=.*#REALITY_DEST=${REALITY_DEST}#" .env
+          sed -i "s#^VLESS_FLOW=.*#VLESS_FLOW=${VLESS_FLOW}#" .env
+          sed -i "s#^VLESS_FP=.*#VLESS_FP=${VLESS_FP}#" .env
+
+      - name: Prepare SSH key for Ansible
+        run: |
+          mkdir -p ~/.ssh
+          RAW_KEY='${{ secrets.DEPLOY_SSH_PRIVATE_KEY }}'
+          if [[ "$RAW_KEY" == *"\\n"* ]]; then
+            printf '%b' "$RAW_KEY" | tr -d '\r' > ~/.ssh/id_ed25519
+          else
+            printf '%s\n' "$RAW_KEY" | tr -d '\r' > ~/.ssh/id_ed25519
+          fi
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keygen -y -f ~/.ssh/id_ed25519 >/dev/null
+
+      - name: Build effective admin CIDRs (runner only)
+        run: |
+          export RUNNER_IP="$(curl -4 -fsSL https://api.ipify.org)"
+          python - <<'PY'
+          import ipaddress
+          import json
+          import os
+
+          effective = [f"{os.environ['RUNNER_IP']}/32"]
+          ipaddress.ip_network(effective[0], strict=False)
+          with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as f:
+              f.write(f"ADMIN_CIDRS_EFFECTIVE_JSON={json.dumps(effective)}\\n")
+          PY
+
+      - name: Build terraform.tfvars (control only)
+        run: |
+          cat > infra/terraform/terraform.tfvars <<EOFVARS
+          do_token = "${{ secrets.DIGITALOCEAN_TOKEN }}"
+          project_name = "${PROJECT_NAME}"
+          create_control = true
+          create_worker = false
+          ssh_key_fingerprints = ["${{ secrets.DO_SSH_KEY_FINGERPRINT }}"]
+          control_node_name = "${CONTROL_NODE_NAME}"
+          control_node_region = "${CONTROL_NODE_REGION}"
+          control_node_size = "${CONTROL_NODE_SIZE}"
+          control_node_image = "${CONTROL_NODE_IMAGE}"
+          worker_node_name = "placeholder-worker"
+          worker_node_region = "${WORKER_NODE_REGION}"
+          worker_node_size = "${WORKER_NODE_SIZE}"
+          worker_node_image = "${WORKER_NODE_IMAGE}"
+          allowed_admin_cidrs = ${ADMIN_CIDRS_EFFECTIVE_JSON}
+          EOFVARS
+
+      - name: Ensure control runtime and inventory
+        env:
+          ANSIBLE_HOST_KEY_CHECKING: "False"
+          TF_BACKEND_CONFIG_FILE: backend.hcl
+        run: |
+          make tf-init
+          make tf-apply
+          make render-inventory
+          ansible-playbook -i infra/ansible/inventory.generated.ini infra/ansible/playbooks/bootstrap.yml --limit control
+          make deploy-control
+
+      - name: Capture old worker metadata
+        env:
+          ANSIBLE_HOST_KEY_CHECKING: "False"
+        run: |
+          OLD_INFO=$(ansible control -i infra/ansible/inventory.generated.ini -m shell -a "docker compose --env-file /opt/connect/.env -f /opt/connect/control/docker-compose.yml -p connect-control exec -T control-api connectctl node-info ${OLD_WORKER_NAME}" -o | sed 's/^.*| CHANGED | rc=0 >> //')
+          echo "$OLD_INFO" > old_worker.json
+          echo "OLD_WORKER_PROVIDER_ID=$(jq -r '.provider_node_id // empty' old_worker.json)" >> "$GITHUB_ENV"
+
+      - name: Create candidate worker droplet
+        run: |
+          CANDIDATE_NAME="connect-worker-uk-blue-${GITHUB_RUN_ID}"
+          echo "CANDIDATE_NAME=${CANDIDATE_NAME}" >> "$GITHUB_ENV"
+          CREATE_JSON=$(connectctl do-create-worker "${CANDIDATE_NAME}" --region "${WORKER_NODE_REGION}" --size "${WORKER_NODE_SIZE}" --image "${WORKER_NODE_IMAGE}")
+          echo "$CREATE_JSON" > create_worker.json
+          CANDIDATE_ID=$(jq -r '.droplet.id' create_worker.json)
+          echo "CANDIDATE_ID=${CANDIDATE_ID}" >> "$GITHUB_ENV"
+
+      - name: Wait candidate worker active + public IP
+        run: |
+          for i in $(seq 1 60); do
+            STATE=$(connectctl do-get-worker "$CANDIDATE_ID")
+            STATUS=$(echo "$STATE" | jq -r '.droplet.status // empty')
+            IP=$(echo "$STATE" | jq -r '.droplet.networks.v4[]? | select(.type=="public") | .ip_address' | head -n1)
+            if [ "$STATUS" = "active" ] && [ -n "$IP" ] && [ "$IP" != "null" ]; then
+              echo "CANDIDATE_IP=$IP" >> "$GITHUB_ENV"
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "Candidate worker did not become active with public IP" >&2
+          exit 1
+
+      - name: Register candidate node in control DB
+        env:
+          ANSIBLE_HOST_KEY_CHECKING: "False"
+        run: |
+          ansible control -i infra/ansible/inventory.generated.ini -m shell -a "docker compose --env-file /opt/connect/.env -f /opt/connect/control/docker-compose.yml -p connect-control exec -T control-api connectctl node-upsert ${CANDIDATE_NAME} --role worker --country gb --provider digitalocean --provider-node-id ${CANDIDATE_ID} --public-ip ${CANDIDATE_IP} --actor automation"
+
+      - name: Render candidate Xray config from control metadata
+        env:
+          ANSIBLE_HOST_KEY_CHECKING: "False"
+        run: |
+          ansible-playbook -i infra/ansible/inventory.generated.ini infra/ansible/playbooks/render_worker_config.yml -e "worker_node_name=${CANDIDATE_NAME}"
+
+      - name: Build candidate inventory
+        run: |
+          cat > infra/ansible/inventory.candidate.ini <<EOF
+          [workers_uk]
+          ${CANDIDATE_NAME} ansible_host=${CANDIDATE_IP} ansible_user=root
+
+          [all:vars]
+          ansible_python_interpreter=/usr/bin/python3
+          EOF
+
+      - name: Wait candidate SSH
+        env:
+          ANSIBLE_HOST_KEY_CHECKING: "False"
+        run: |
+          ansible workers_uk -i infra/ansible/inventory.candidate.ini -m wait_for_connection -a "timeout=600"
+
+      - name: Bootstrap candidate worker
+        env:
+          ANSIBLE_HOST_KEY_CHECKING: "False"
+        run: |
+          ansible-playbook -i infra/ansible/inventory.candidate.ini infra/ansible/playbooks/bootstrap.yml
+
+      - name: Install Xray on candidate (pre-cutover)
+        env:
+          ANSIBLE_HOST_KEY_CHECKING: "False"
+        run: |
+          ansible-playbook -i infra/ansible/inventory.candidate.ini infra/ansible/playbooks/install_xray.yml
+
+      - name: Cut over smart users to candidate
+        env:
+          ANSIBLE_HOST_KEY_CHECKING: "False"
+        run: |
+          ansible control -i infra/ansible/inventory.generated.ini -m shell -a "docker compose --env-file /opt/connect/.env -f /opt/connect/control/docker-compose.yml -p connect-control exec -T control-api connectctl worker-cutover-smart ${OLD_WORKER_NAME} ${CANDIDATE_NAME} --actor automation"
+          echo "CUTOVER_DONE=1" >> "$GITHUB_ENV"
+
+      - name: Re-render and redeploy candidate config (post-cutover)
+        env:
+          ANSIBLE_HOST_KEY_CHECKING: "False"
+        run: |
+          ansible-playbook -i infra/ansible/inventory.generated.ini infra/ansible/playbooks/render_worker_config.yml -e "worker_node_name=${CANDIDATE_NAME}"
+          ansible-playbook -i infra/ansible/inventory.candidate.ini infra/ansible/playbooks/install_xray.yml
+
+      - name: Mark old worker disabled in control DB
+        env:
+          ANSIBLE_HOST_KEY_CHECKING: "False"
+        run: |
+          ansible control -i infra/ansible/inventory.generated.ini -m shell -a "docker compose --env-file /opt/connect/.env -f /opt/connect/control/docker-compose.yml -p connect-control exec -T control-api connectctl node-status ${OLD_WORKER_NAME} disabled --actor automation"
+
+      - name: Delete old worker droplet
+        if: env.OLD_WORKER_PROVIDER_ID != ''
+        run: |
+          connectctl do-delete-worker "$OLD_WORKER_PROVIDER_ID"
+
+      - name: Rollback cutover on failure
+        if: failure() && env.CUTOVER_DONE == '1'
+        env:
+          ANSIBLE_HOST_KEY_CHECKING: "False"
+        run: |
+          ansible control -i infra/ansible/inventory.generated.ini -m shell -a "docker compose --env-file /opt/connect/.env -f /opt/connect/control/docker-compose.yml -p connect-control exec -T control-api connectctl worker-cutover-smart ${CANDIDATE_NAME} ${OLD_WORKER_NAME} --actor rollback" || true
+          ansible control -i infra/ansible/inventory.generated.ini -m shell -a "docker compose --env-file /opt/connect/.env -f /opt/connect/control/docker-compose.yml -p connect-control exec -T control-api connectctl node-status ${CANDIDATE_NAME} disabled --actor rollback" || true
+
+      - name: Cleanup candidate droplet on rollback
+        if: failure() && env.CANDIDATE_ID != ''
+        run: |
+          connectctl do-delete-worker "$CANDIDATE_ID" || true
