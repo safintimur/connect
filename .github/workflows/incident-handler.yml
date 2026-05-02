@@ -227,7 +227,7 @@ jobs:
             core.setFailed(`Unsupported action: ${action}`);
 
       - name: Telegram notify
-        if: always() && secrets.TELEGRAM_BOT_TOKEN != '' && vars.TELEGRAM_ADMIN_IDS != ''
+        if: always()
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_ADMIN_IDS: ${{ vars.TELEGRAM_ADMIN_IDS }}
@@ -241,6 +241,9 @@ jobs:
           RUN_URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
           JOB_STATUS: ${{ job.status }}
         run: |
+          if [ -z "${TELEGRAM_BOT_TOKEN}" ] || [ -z "${TELEGRAM_ADMIN_IDS}" ]; then
+            exit 0
+          fi
           CHAT_ID=$(python - <<'PY'
           import json, os
           raw = (os.getenv("TELEGRAM_ADMIN_IDS", "") or "").strip()
