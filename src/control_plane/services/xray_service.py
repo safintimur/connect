@@ -45,7 +45,7 @@ def build_worker_smart_config(session: Session, node, listen_port: int = 443) ->
         "routing": {
             "domainStrategy": "AsIs",
             "rules": [
-                {"type": "field", "outboundTag": "direct", "domain": ["geosite:ru"]},
+                {"type": "field", "outboundTag": "direct", "domain": ["geosite:category-ru"]},
                 {"type": "field", "outboundTag": "direct", "ip": ["geoip:ru", "geoip:private"]},
             ],
         },
