@@ -9,6 +9,7 @@ __pycache__/
 .pytest_cache/
 .mypy_cache/
 *.log
+.tmp_logs/
 .terraform/
 *.tfstate
 *.tfstate.*

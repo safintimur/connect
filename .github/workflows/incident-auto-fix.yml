@@ -18,6 +18,14 @@ on:
         description: "Failure summary"
         required: false
         default: ""
+      user_note:
+        description: "Optional iterative note from admin"
+        required: false
+        default: ""
+      create_pr:
+        description: "Create/update dev PR from incident artifacts"
+        required: false
+        default: "false"
 
 permissions:
   contents: write
@@ -36,6 +44,8 @@ jobs:
       OPERATION: ${{ github.event.inputs.operation }}
       RUN_ID: ${{ github.event.inputs.run_id }}
       SUMMARY: ${{ github.event.inputs.summary }}
+      USER_NOTE: ${{ github.event.inputs.user_note || '' }}
+      CREATE_PR: ${{ github.event.inputs.create_pr || 'false' }}
       INCIDENT_AUTO_APPLY_PATCH: ${{ vars.INCIDENT_AUTO_APPLY_PATCH || 'false' }}
       RUN_URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
     steps:
@@ -54,7 +64,7 @@ jobs:
           PY
           )
           [ -z "$CHAT_ID" ] && exit 0
-          TEXT="incident ${INCIDENT_ID}: auto-fix started%0Aoperation=${OPERATION}%0Aagent_backend=${INCIDENT_AGENT_BACKEND}%0Aauto_apply=${INCIDENT_AUTO_APPLY_PATCH}%0Arun=${RUN_URL}"
+          TEXT="incident ${INCIDENT_ID}: auto-fix started%0Aoperation=${OPERATION}%0Aagent_backend=${INCIDENT_AGENT_BACKEND}%0Aauto_apply=${INCIDENT_AUTO_APPLY_PATCH}%0Acreate_pr=${CREATE_PR}%0Auser_note=${USER_NOTE}%0Arun=${RUN_URL}"
           curl -fsS -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" -d "chat_id=${CHAT_ID}" -d "text=${TEXT}" >/dev/null
 
       - name: Validate agent backend
@@ -85,6 +95,7 @@ jobs:
           - operation: ${OPERATION}
           - failed_run_id: ${RUN_ID}
           - summary: ${SUMMARY}
+          - user_note: ${USER_NOTE}
           - agent_backend: ${INCIDENT_AGENT_BACKEND}
           - created_by: incident-auto-fix workflow
 
@@ -111,7 +122,7 @@ jobs:
           PY
           )
           [ -z "$CHAT_ID" ] && exit 0
-          TEXT="incident ${INCIDENT_ID}: codex analyzing%0Asummary=${SUMMARY}%0Arun=${RUN_URL}"
+          TEXT="incident ${INCIDENT_ID}: codex analyzing%0Asummary=${SUMMARY}%0Auser_note=${USER_NOTE}%0Arun=${RUN_URL}"
           curl -fsS -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" -d "chat_id=${CHAT_ID}" -d "text=${TEXT}" >/dev/null
 
       - name: Codex cloud analysis artifact
@@ -127,6 +138,7 @@ jobs:
 
           incident_id = os.environ["INCIDENT_ID"]
           summary = os.environ.get("SUMMARY", "")
+          user_note = os.environ.get("USER_NOTE", "")
           operation = os.environ.get("OPERATION", "")
           run_id = os.environ.get("RUN_ID", "")
           repo = os.environ.get("REPO", "")
@@ -141,6 +153,7 @@ jobs:
           Operation: {operation}
           Failed run id: {run_id}
           Summary: {summary}
+          User note for this iteration: {user_note}
 
           Repository files (truncated):
           {file_list}
@@ -241,7 +254,7 @@ jobs:
           PY
 
       - name: Notify writing PR
-        if: env.TELEGRAM_BOT_TOKEN != '' && env.TELEGRAM_ADMIN_IDS != ''
+        if: env.CREATE_PR == 'true' && env.TELEGRAM_BOT_TOKEN != '' && env.TELEGRAM_ADMIN_IDS != ''
         run: |
           CHAT_ID=$(python - <<'PY'
           import json, os
@@ -255,14 +268,16 @@ jobs:
           PY
           )
           [ -z "$CHAT_ID" ] && exit 0
-          TEXT="incident ${INCIDENT_ID}: writing PR"
+          TEXT="incident ${INCIDENT_ID}: writing PR to dev"
           curl -fsS -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" -d "chat_id=${CHAT_ID}" -d "text=${TEXT}" >/dev/null
 
       - name: Create proposal PR
+        if: env.CREATE_PR == 'true'
         uses: peter-evans/create-pull-request@v7
         id: cpr
         with:
           branch: "auto/incident-${{ github.event.inputs.incident_id }}"
+          base: "dev"
           commit-message: "incident: propose fix plan for ${{ github.event.inputs.incident_id }}"
           title: "incident: ${{ github.event.inputs.incident_id }} fix proposal"
           body: |
@@ -276,14 +291,47 @@ jobs:
             If backend is `codex-cloud`, this PR also contains `docs/incidents/<incident_id>.codex.md` with machine-generated fix analysis.
             If `INCIDENT_AUTO_APPLY_PATCH=true` and a safe diff block was returned, patch is auto-applied in this PR branch.
             Merge only after manual review and explicit Telegram approval via `/approve <incident_id> <pr_number>`.
-          draft: true
+          draft: false
           labels: |
             incident
             needs-triage
 
       - name: Print PR url
+        if: env.CREATE_PR == 'true'
         run: |
           echo "PR: ${{ steps.cpr.outputs.pull-request-url }}"
+
+      - name: Notify plan for approval
+        if: env.CREATE_PR != 'true' && env.TELEGRAM_BOT_TOKEN != '' && env.TELEGRAM_ADMIN_IDS != ''
+        run: |
+          CHAT_ID=$(python - <<'PY'
+          import json, os
+          raw=(os.getenv("TELEGRAM_ADMIN_IDS","") or "").strip()
+          try:
+              if raw.startswith("["): print(str(json.loads(raw)[0])); raise SystemExit
+              if "," in raw: print(raw.split(",")[0].strip()); raise SystemExit
+          except Exception:
+              pass
+          print(raw)
+          PY
+          )
+          [ -z "$CHAT_ID" ] && exit 0
+          export PLAN_PATH="docs/incidents/${INCIDENT_ID}.codex.md"
+          if [ ! -f "$PLAN_PATH" ]; then
+            export PLAN_PATH="docs/incidents/${INCIDENT_ID}.md"
+          fi
+          PLAN_PREVIEW=$(python - <<'PY'
+          import os
+          p=os.environ.get("PLAN_PATH","")
+          try:
+            text=open(p, "r", encoding="utf-8").read()
+          except Exception:
+            text="plan unavailable"
+          print(text[:1400].replace("\n","\\n"))
+          PY
+          )
+          TEXT="incident ${INCIDENT_ID}: plan ready%0A${PLAN_PREVIEW}%0AIterate: /agent ${INCIDENT_ID} <message>%0AApprove to build dev PR: /approve ${INCIDENT_ID}"
+          curl -fsS -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" -d "chat_id=${CHAT_ID}" -d "text=${TEXT}" >/dev/null
 
       - name: Notify completed
         if: always() && env.TELEGRAM_BOT_TOKEN != '' && env.TELEGRAM_ADMIN_IDS != ''
@@ -303,5 +351,9 @@ jobs:
           PY
           )
           [ -z "$CHAT_ID" ] && exit 0
-          TEXT="incident ${INCIDENT_ID}: waiting approve%0Astatus=${JOB_STATUS}%0Abackend=${INCIDENT_AGENT_BACKEND}%0Apr=${PR_URL:-n/a}%0Arun=${RUN_URL}"
+          if [ "${CREATE_PR}" = "true" ]; then
+            TEXT="incident ${INCIDENT_ID}: dev PR ready%0Astatus=${JOB_STATUS}%0Abackend=${INCIDENT_AGENT_BACKEND}%0Apr=${PR_URL:-n/a}%0AWait CI then approve: /approve ${INCIDENT_ID} <pr_number>%0Arun=${RUN_URL}"
+          else
+            TEXT="incident ${INCIDENT_ID}: analysis ready%0Astatus=${JOB_STATUS}%0Abackend=${INCIDENT_AGENT_BACKEND}%0AIterate: /agent ${INCIDENT_ID} <message>%0AApprove to build dev PR: /approve ${INCIDENT_ID}%0Arun=${RUN_URL}"
+          fi
           curl -fsS -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" -d "chat_id=${CHAT_ID}" -d "text=${TEXT}" >/dev/null

@@ -42,7 +42,7 @@ Re-run after user/node config changes:
 - `make reconcile-worker`
 
 ## CI workflows
-- Preflight checks: `.github/workflows/preflight.yml`
+- CI checks: `.github/workflows/ci.yml`
 - Control bootstrap: `.github/workflows/deploy.yml`
 - Worker deploy: `.github/workflows/deploy-worker.yml`
 - Nodes reboot operation: `.github/workflows/ops-nodes-reboot.yml`
@@ -61,7 +61,7 @@ Run this before push:
 - Ansible playbook syntax-check
 
 Optional local GitHub Actions emulation with `act`:
-- `act -W .github/workflows/preflight.yml -j lint-and-smoke`
+- `act -W .github/workflows/ci.yml -j lint-and-smoke`
 
 ## Required GitHub secrets
 - `DIGITALOCEAN_TOKEN`
@@ -111,9 +111,10 @@ Optional local GitHub Actions emulation with `act`:
   - `/user_create <username> [display_name]`
   - `/user_delete <username>`
   - `/incident_status <incident_id>`
+  - `/propose <incident_id>` (build incident plan via agent, no PR yet)
   - `/approve <incident_id> [pr_number]`
-    - without `pr_number`: dispatches `propose_fix` (creates draft incident PR)
-    - with `pr_number`: dispatches merge approval for that PR
+    - without `pr_number`: create/update incident PR to `dev` from prepared plan
+    - with `pr_number`: merge PR after checks; if merged into `dev`, bot opens `dev -> main` PR and asks second approve
   - `/deny <incident_id>`
   - `/retry <incident_id>`
 

@@ -37,79 +37,26 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Setup Python
-        uses: actions/setup-python@v5
+      - name: Infra common setup
+        uses: ./.github/actions/infra-common-setup
         with:
-          python-version: "3.12"
-
-      - name: Setup Terraform
-        uses: hashicorp/setup-terraform@v3
-
-      - name: Install tools
-        run: |
-          python -m pip install --upgrade pip
-          pip install .
-          sudo apt-get update
-          sudo apt-get install -y ansible jq openssh-client
-
-      - name: Configure Terraform backend (DO Spaces)
-        run: |
-          cat > infra/terraform/backend.hcl <<EOF_BACKEND
-          bucket = "${TF_STATE_BUCKET}"
-          key = "${TF_STATE_KEY_PREFIX}/infra/terraform.tfstate"
-          region = "${TF_STATE_REGION}"
-          endpoints = { s3 = "https://${TF_STATE_REGION}.digitaloceanspaces.com" }
-          skip_region_validation = true
-          skip_credentials_validation = true
-          skip_requesting_account_id = true
-          use_path_style = false
-          use_lockfile = true
-          EOF_BACKEND
-
-      - name: Prepare SSH key for Ansible
-        run: |
-          mkdir -p ~/.ssh
-          RAW_KEY='${{ secrets.DEPLOY_SSH_PRIVATE_KEY }}'
-          if [[ "$RAW_KEY" == *"\\n"* ]]; then
-            printf '%b' "$RAW_KEY" | tr -d '\r' > ~/.ssh/id_ed25519
-          else
-            printf '%s\n' "$RAW_KEY" | tr -d '\r' > ~/.ssh/id_ed25519
-          fi
-          chmod 600 ~/.ssh/id_ed25519
-          ssh-keygen -y -f ~/.ssh/id_ed25519 >/dev/null
-
-      - name: Build effective admin CIDRs (runner only)
-        run: |
-          export RUNNER_IP="$(curl -4 -fsSL https://api.ipify.org)"
-          python - <<'PY'
-          import ipaddress
-          import json
-          import os
-
-          effective = [f"{os.environ['RUNNER_IP']}/32"]
-          ipaddress.ip_network(effective[0], strict=False)
-          with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as f:
-              f.write(f"ADMIN_CIDRS_EFFECTIVE_JSON={json.dumps(effective)}\\n")
-          PY
-
-      - name: Build terraform.tfvars
-        run: |
-          cat > infra/terraform/terraform.tfvars <<EOFVARS
-          do_token = "${{ secrets.DIGITALOCEAN_TOKEN }}"
-          project_name = "${PROJECT_NAME}"
-          create_control = true
-          create_worker = true
-          ssh_key_fingerprints = ["${{ secrets.DO_SSH_KEY_FINGERPRINT }}"]
-          control_node_name = "${CONTROL_NODE_NAME}"
-          control_node_region = "${CONTROL_NODE_REGION}"
-          control_node_size = "${CONTROL_NODE_SIZE}"
-          control_node_image = "${CONTROL_NODE_IMAGE}"
-          worker_node_name = "${WORKER_NODE_NAME}"
-          worker_node_region = "${WORKER_NODE_REGION}"
-          worker_node_size = "${WORKER_NODE_SIZE}"
-          worker_node_image = "${WORKER_NODE_IMAGE}"
-          allowed_admin_cidrs = ${ADMIN_CIDRS_EFFECTIVE_JSON}
-          EOFVARS
+          tf_state_bucket: ${{ env.TF_STATE_BUCKET }}
+          tf_state_region: ${{ env.TF_STATE_REGION }}
+          tf_state_key_prefix: ${{ env.TF_STATE_KEY_PREFIX }}
+          do_token: ${{ secrets.DIGITALOCEAN_TOKEN }}
+          do_ssh_key_fingerprint: ${{ secrets.DO_SSH_KEY_FINGERPRINT }}
+          project_name: ${{ env.PROJECT_NAME }}
+          create_control: "true"
+          create_worker: "true"
+          control_node_name: ${{ env.CONTROL_NODE_NAME }}
+          control_node_region: ${{ env.CONTROL_NODE_REGION }}
+          control_node_size: ${{ env.CONTROL_NODE_SIZE }}
+          control_node_image: ${{ env.CONTROL_NODE_IMAGE }}
+          worker_node_name: ${{ env.WORKER_NODE_NAME }}
+          worker_node_region: ${{ env.WORKER_NODE_REGION }}
+          worker_node_size: ${{ env.WORKER_NODE_SIZE }}
+          worker_node_image: ${{ env.WORKER_NODE_IMAGE }}
+          deploy_ssh_private_key: ${{ secrets.DEPLOY_SSH_PRIVATE_KEY }}
 
       - name: Refresh inventory from state
         env:
