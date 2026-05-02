@@ -44,9 +44,27 @@ runs:
       uses: actions/setup-python@v5
       with:
         python-version: "3.12"
+        cache: "pip"
+        cache-dependency-path: |
+          pyproject.toml
+          setup.py
 
     - name: Setup Terraform
       uses: hashicorp/setup-terraform@v3
+
+    - name: Cache Terraform plugin directory
+      uses: actions/cache@v4
+      with:
+        path: ~/.terraform.d/plugin-cache
+        key: terraform-plugin-cache-${{ runner.os }}-${{ hashFiles('infra/terraform/.terraform.lock.hcl') }}
+        restore-keys: |
+          terraform-plugin-cache-${{ runner.os }}-
+
+    - name: Enable Terraform plugin cache
+      shell: bash
+      run: |
+        mkdir -p ~/.terraform.d/plugin-cache
+        echo "TF_PLUGIN_CACHE_DIR=$HOME/.terraform.d/plugin-cache" >> "$GITHUB_ENV"
 
     - name: Install tools
       shell: bash
@@ -96,7 +114,7 @@ runs:
         effective = [f"{os.environ['RUNNER_IP']}/32"]
         ipaddress.ip_network(effective[0], strict=False)
         with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as f:
-            f.write(f"ADMIN_CIDRS_EFFECTIVE_JSON={json.dumps(effective)}\\n")
+            f.write(f"ADMIN_CIDRS_EFFECTIVE_JSON={json.dumps(effective)}\n")
         PY
 
     - name: Build terraform.tfvars
