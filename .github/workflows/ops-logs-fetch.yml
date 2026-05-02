@@ -1,0 +1,194 @@
+name: Ops Logs Fetch
+
+on:
+  workflow_dispatch:
+    inputs:
+      lines:
+        description: "How many lines per service to fetch"
+        required: false
+        default: "300"
+      include_worker_journal:
+        description: "Fetch worker system journal and xray status"
+        required: false
+        default: "true"
+  schedule:
+    - cron: "*/10 * * * *"
+
+concurrency:
+  group: connect-logs
+  cancel-in-progress: true
+
+jobs:
+  fetch:
+    runs-on: ubuntu-latest
+    environment: prod
+    if: github.ref == 'refs/heads/main'
+    env:
+      PROJECT_NAME: ${{ vars.PROJECT_NAME || 'connect-core' }}
+      CONTROL_NODE_NAME: ${{ vars.CONTROL_NODE_NAME || 'connect-control-1' }}
+      CONTROL_NODE_REGION: ${{ vars.CONTROL_NODE_REGION || 'lon1' }}
+      CONTROL_NODE_SIZE: ${{ vars.CONTROL_NODE_SIZE || 's-1vcpu-1gb' }}
+      CONTROL_NODE_IMAGE: ${{ vars.CONTROL_NODE_IMAGE || 'ubuntu-24-04-x64' }}
+      WORKER_NODE_NAME: ${{ vars.WORKER_NODE_NAME || 'connect-worker-uk-1' }}
+      WORKER_NODE_REGION: ${{ vars.WORKER_NODE_REGION || 'lon1' }}
+      WORKER_NODE_SIZE: ${{ vars.WORKER_NODE_SIZE || 's-1vcpu-1gb' }}
+      WORKER_NODE_IMAGE: ${{ vars.WORKER_NODE_IMAGE || 'ubuntu-24-04-x64' }}
+      TF_STATE_BUCKET: ${{ vars.TF_STATE_BUCKET || 'connect-space-bucket' }}
+      TF_STATE_REGION: ${{ vars.TF_STATE_REGION || 'lon1' }}
+      TF_STATE_KEY_PREFIX: ${{ vars.TF_STATE_KEY_PREFIX || 'connect-prod' }}
+      ADMIN_CIDRS_JSON: ${{ vars.ADMIN_CIDRS_JSON || '[]' }}
+      AWS_ACCESS_KEY_ID: ${{ secrets.DO_SPACES_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.DO_SPACES_SECRET_ACCESS_KEY }}
+      LOG_LINES: ${{ github.event.inputs.lines || '300' }}
+      INCLUDE_WORKER_JOURNAL: ${{ github.event.inputs.include_worker_journal || 'true' }}
+      TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+      TELEGRAM_ADMIN_IDS: ${{ vars.TELEGRAM_ADMIN_IDS || '' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+
+      - name: Install tools
+        run: |
+          python -m pip install --upgrade pip
+          pip install .
+          sudo apt-get update
+          sudo apt-get install -y ansible jq openssh-client
+
+      - name: Configure Terraform backend (DO Spaces)
+        run: |
+          cat > infra/terraform/backend.hcl <<EOF_BACKEND
+          bucket = "${TF_STATE_BUCKET}"
+          key = "${TF_STATE_KEY_PREFIX}/infra/terraform.tfstate"
+          region = "${TF_STATE_REGION}"
+          endpoints = { s3 = "https://${TF_STATE_REGION}.digitaloceanspaces.com" }
+          skip_region_validation = true
+          skip_credentials_validation = true
+          skip_requesting_account_id = true
+          use_path_style = false
+          use_lockfile = true
+          EOF_BACKEND
+
+      - name: Prepare SSH key for Ansible
+        run: |
+          mkdir -p ~/.ssh
+          RAW_KEY='${{ secrets.DEPLOY_SSH_PRIVATE_KEY }}'
+          if [[ "$RAW_KEY" == *"\\n"* ]]; then
+            printf '%b' "$RAW_KEY" | tr -d '\r' > ~/.ssh/id_ed25519
+          else
+            printf '%s\n' "$RAW_KEY" | tr -d '\r' > ~/.ssh/id_ed25519
+          fi
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keygen -y -f ~/.ssh/id_ed25519 >/dev/null
+
+      - name: Build effective admin CIDRs (runner only)
+        run: |
+          export RUNNER_IP="$(curl -4 -fsSL https://api.ipify.org)"
+          python - <<'PY'
+          import ipaddress
+          import json
+          import os
+
+          effective = [f"{os.environ['RUNNER_IP']}/32"]
+          ipaddress.ip_network(effective[0], strict=False)
+          with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as f:
+              f.write(f"ADMIN_CIDRS_EFFECTIVE_JSON={json.dumps(effective)}\\n")
+          PY
+
+      - name: Build terraform.tfvars
+        run: |
+          cat > infra/terraform/terraform.tfvars <<EOFVARS
+          do_token = "${{ secrets.DIGITALOCEAN_TOKEN }}"
+          project_name = "${PROJECT_NAME}"
+          create_control = true
+          create_worker = true
+          ssh_key_fingerprints = ["${{ secrets.DO_SSH_KEY_FINGERPRINT }}"]
+          control_node_name = "${CONTROL_NODE_NAME}"
+          control_node_region = "${CONTROL_NODE_REGION}"
+          control_node_size = "${CONTROL_NODE_SIZE}"
+          control_node_image = "${CONTROL_NODE_IMAGE}"
+          worker_node_name = "${WORKER_NODE_NAME}"
+          worker_node_region = "${WORKER_NODE_REGION}"
+          worker_node_size = "${WORKER_NODE_SIZE}"
+          worker_node_image = "${WORKER_NODE_IMAGE}"
+          allowed_admin_cidrs = ${ADMIN_CIDRS_EFFECTIVE_JSON}
+          EOFVARS
+
+      - name: Refresh inventory from state
+        env:
+          TF_BACKEND_CONFIG_FILE: backend.hcl
+        run: |
+          make tf-init
+          make tf-apply
+          make render-inventory
+
+      - name: Collect control logs now
+        env:
+          ANSIBLE_HOST_KEY_CHECKING: "False"
+        run: |
+          mkdir -p logs
+          ansible control -i infra/ansible/inventory.generated.ini -m shell -a "docker compose --env-file /opt/connect/.env -f /opt/connect/control/docker-compose.yml -p connect-control logs --tail ${LOG_LINES} control-api control-bot" > logs/control-compose.log
+          ansible control -i infra/ansible/inventory.generated.ini -m shell -a "docker ps --format '{{.Names}} {{.Status}}'" > logs/control-ps.log
+
+      - name: Collect worker logs now
+        env:
+          ANSIBLE_HOST_KEY_CHECKING: "False"
+        run: |
+          mkdir -p logs
+          ansible workers_uk -i infra/ansible/inventory.generated.ini -m shell -a "systemctl status xray --no-pager -l || true" > logs/worker-xray-status.log
+          if [ "${INCLUDE_WORKER_JOURNAL}" = "true" ]; then
+            ansible workers_uk -i infra/ansible/inventory.generated.ini -m shell -a "journalctl -u xray -n ${LOG_LINES} --no-pager || true" > logs/worker-xray-journal.log
+          fi
+
+      - name: Build short summary
+        run: |
+          mkdir -p logs
+          {
+            echo "run_url=https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+            echo "control_errors=$(rg -ni \"error|traceback|exception|failed\" logs/control-compose.log | wc -l | tr -d ' ')"
+            echo "worker_errors=$(rg -ni \"error|traceback|exception|failed\" logs/worker-xray-journal.log logs/worker-xray-status.log 2>/dev/null | wc -l | tr -d ' ')"
+          } | tee logs/summary.txt
+
+      - name: Upload log artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: connect-logs-${{ github.run_id }}
+          path: logs/
+
+      - name: Telegram alert on errors
+        if: always() && env.TELEGRAM_BOT_TOKEN != '' && env.TELEGRAM_ADMIN_IDS != ''
+        run: |
+          CONTROL_ERR="$(awk -F= '/^control_errors=/{print $2}' logs/summary.txt)"
+          WORKER_ERR="$(awk -F= '/^worker_errors=/{print $2}' logs/summary.txt)"
+          if [ "${CONTROL_ERR}" = "0" ] && [ "${WORKER_ERR}" = "0" ]; then
+            exit 0
+          fi
+          CHAT_ID=$(python - <<'PY'
+          import json, os
+          raw=(os.getenv("TELEGRAM_ADMIN_IDS","") or "").strip()
+          try:
+              if raw.startswith("["):
+                  arr = json.loads(raw)
+                  if arr:
+                      print(str(arr[0]))
+                      raise SystemExit
+              if "," in raw:
+                  print(raw.split(",")[0].strip())
+                  raise SystemExit
+          except Exception:
+              pass
+          print(raw)
+          PY
+          )
+          [ -z "$CHAT_ID" ] && exit 0
+          TEXT="connect log alert%0Acontrol_errors=${CONTROL_ERR}%0Aworker_errors=${WORKER_ERR}%0Arun=https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          curl -fsS -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+            -d "chat_id=${CHAT_ID}" \
+            -d "text=${TEXT}" >/dev/null
