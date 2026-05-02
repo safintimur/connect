@@ -37,6 +37,11 @@ services:
     command: ["uvicorn", "control_plane.api:app", "--host", "0.0.0.0", "--port", "8080"]
     ports:
       - "80:8080"
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "10"
 
   control-bot:
     build:
@@ -74,6 +79,11 @@ services:
         "-lc",
         "if [ -z \"$TELEGRAM_BOT_TOKEN\" ] || [ -z \"$TELEGRAM_ADMIN_IDS\" ]; then echo 'control-bot disabled: TELEGRAM_BOT_TOKEN/TELEGRAM_ADMIN_IDS missing'; sleep infinity; else connectbot; fi",
       ]
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "10"
 
 volumes:
   postgres_data:
