@@ -99,7 +99,7 @@ jobs:
           effective = [f"{os.environ['RUNNER_IP']}/32"]
           ipaddress.ip_network(effective[0], strict=False)
           with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as f:
-              f.write(f"ADMIN_CIDRS_EFFECTIVE_JSON={json.dumps(effective)}\\n")
+              f.write(f"ADMIN_CIDRS_EFFECTIVE_JSON={json.dumps(effective)}\n")
           PY
 
       - name: Build terraform.tfvars
@@ -165,10 +165,15 @@ jobs:
       - name: Telegram alert on errors
         if: always() && env.TELEGRAM_BOT_TOKEN != '' && env.TELEGRAM_ADMIN_IDS != ''
         run: |
-          CONTROL_ERR="$(awk -F= '/^control_errors=/{print $2}' logs/summary.txt)"
-          WORKER_ERR="$(awk -F= '/^worker_errors=/{print $2}' logs/summary.txt)"
-          if [ "${CONTROL_ERR}" = "0" ] && [ "${WORKER_ERR}" = "0" ]; then
-            exit 0
+          if [ ! -f logs/summary.txt ]; then
+            CONTROL_ERR="n/a"
+            WORKER_ERR="n/a"
+          else
+            CONTROL_ERR="$(awk -F= '/^control_errors=/{print $2}' logs/summary.txt)"
+            WORKER_ERR="$(awk -F= '/^worker_errors=/{print $2}' logs/summary.txt)"
+            if [ "${CONTROL_ERR}" = "0" ] && [ "${WORKER_ERR}" = "0" ]; then
+              exit 0
+            fi
           fi
           CHAT_ID=$(python - <<'PY'
           import json, os
