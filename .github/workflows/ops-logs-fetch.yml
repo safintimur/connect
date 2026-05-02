@@ -134,17 +134,17 @@ jobs:
           ANSIBLE_HOST_KEY_CHECKING: "False"
         run: |
           mkdir -p logs
-          ansible control -i infra/ansible/inventory.generated.ini -m shell -a "docker compose --env-file /opt/connect/.env -f /opt/connect/control/docker-compose.yml -p connect-control logs --tail ${LOG_LINES} control-api control-bot" > logs/control-compose.log
-          ansible control -i infra/ansible/inventory.generated.ini -m shell -a "docker ps --format '{{.Names}} {{.Status}}'" > logs/control-ps.log
+          ansible control -i infra/ansible/inventory.generated.ini -m shell -a "docker compose --env-file /opt/connect/.env -f /opt/connect/control/docker-compose.yml -p connect-control logs --tail ${LOG_LINES} control-api control-bot" -o > logs/control-compose.log 2>&1 || true
+          ansible control -i infra/ansible/inventory.generated.ini -m shell -a "docker ps --format '{{.Names}} {{.Status}}'" -o > logs/control-ps.log 2>&1 || true
 
       - name: Collect worker logs now
         env:
           ANSIBLE_HOST_KEY_CHECKING: "False"
         run: |
           mkdir -p logs
-          ansible workers_uk -i infra/ansible/inventory.generated.ini -m shell -a "systemctl status xray --no-pager -l || true" > logs/worker-xray-status.log
+          ansible workers_uk -i infra/ansible/inventory.generated.ini -m shell -a "systemctl status xray --no-pager -l || true" -o > logs/worker-xray-status.log 2>&1 || true
           if [ "${INCLUDE_WORKER_JOURNAL}" = "true" ]; then
-            ansible workers_uk -i infra/ansible/inventory.generated.ini -m shell -a "journalctl -u xray -n ${LOG_LINES} --no-pager || true" > logs/worker-xray-journal.log
+            ansible workers_uk -i infra/ansible/inventory.generated.ini -m shell -a "journalctl -u xray -n ${LOG_LINES} --no-pager || true" -o > logs/worker-xray-journal.log 2>&1 || true
           fi
 
       - name: Build short summary
