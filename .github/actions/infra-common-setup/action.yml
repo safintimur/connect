@@ -1,0 +1,120 @@
+name: Infra Common Setup
+description: Common CI setup for connect infra workflows
+
+inputs:
+  tf_state_bucket:
+    required: true
+  tf_state_region:
+    required: true
+  tf_state_key_prefix:
+    required: true
+  do_token:
+    required: true
+  do_ssh_key_fingerprint:
+    required: true
+  project_name:
+    required: true
+  create_control:
+    required: true
+  create_worker:
+    required: true
+  control_node_name:
+    required: true
+  control_node_region:
+    required: true
+  control_node_size:
+    required: true
+  control_node_image:
+    required: true
+  worker_node_name:
+    required: true
+  worker_node_region:
+    required: true
+  worker_node_size:
+    required: true
+  worker_node_image:
+    required: true
+  deploy_ssh_private_key:
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Setup Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: "3.12"
+
+    - name: Setup Terraform
+      uses: hashicorp/setup-terraform@v3
+
+    - name: Install tools
+      shell: bash
+      run: |
+        python -m pip install --upgrade pip
+        pip install .
+        sudo apt-get update
+        sudo apt-get install -y ansible jq openssh-client
+
+    - name: Configure Terraform backend (DO Spaces)
+      shell: bash
+      run: |
+        cat > infra/terraform/backend.hcl <<EOF_BACKEND
+        bucket = "${{ inputs.tf_state_bucket }}"
+        key = "${{ inputs.tf_state_key_prefix }}/infra/terraform.tfstate"
+        region = "${{ inputs.tf_state_region }}"
+        endpoints = { s3 = "https://${{ inputs.tf_state_region }}.digitaloceanspaces.com" }
+        skip_region_validation = true
+        skip_credentials_validation = true
+        skip_requesting_account_id = true
+        use_path_style = false
+        use_lockfile = true
+        EOF_BACKEND
+
+    - name: Prepare SSH key for Ansible
+      shell: bash
+      run: |
+        mkdir -p ~/.ssh
+        RAW_KEY='${{ inputs.deploy_ssh_private_key }}'
+        if [[ "$RAW_KEY" == *"\\n"* ]]; then
+          printf '%b' "$RAW_KEY" | tr -d '\r' > ~/.ssh/id_ed25519
+        else
+          printf '%s\n' "$RAW_KEY" | tr -d '\r' > ~/.ssh/id_ed25519
+        fi
+        chmod 600 ~/.ssh/id_ed25519
+        ssh-keygen -y -f ~/.ssh/id_ed25519 >/dev/null
+
+    - name: Build effective admin CIDRs (runner only)
+      shell: bash
+      run: |
+        export RUNNER_IP="$(curl -4 -fsSL https://api.ipify.org)"
+        python - <<'PY'
+        import ipaddress
+        import json
+        import os
+
+        effective = [f"{os.environ['RUNNER_IP']}/32"]
+        ipaddress.ip_network(effective[0], strict=False)
+        with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as f:
+            f.write(f"ADMIN_CIDRS_EFFECTIVE_JSON={json.dumps(effective)}\\n")
+        PY
+
+    - name: Build terraform.tfvars
+      shell: bash
+      run: |
+        cat > infra/terraform/terraform.tfvars <<EOFVARS
+        do_token = "${{ inputs.do_token }}"
+        project_name = "${{ inputs.project_name }}"
+        create_control = ${{ inputs.create_control }}
+        create_worker = ${{ inputs.create_worker }}
+        ssh_key_fingerprints = ["${{ inputs.do_ssh_key_fingerprint }}"]
+        control_node_name = "${{ inputs.control_node_name }}"
+        control_node_region = "${{ inputs.control_node_region }}"
+        control_node_size = "${{ inputs.control_node_size }}"
+        control_node_image = "${{ inputs.control_node_image }}"
+        worker_node_name = "${{ inputs.worker_node_name }}"
+        worker_node_region = "${{ inputs.worker_node_region }}"
+        worker_node_size = "${{ inputs.worker_node_size }}"
+        worker_node_image = "${{ inputs.worker_node_image }}"
+        allowed_admin_cidrs = ${ADMIN_CIDRS_EFFECTIVE_JSON}
+        EOFVARS

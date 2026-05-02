@@ -54,6 +54,8 @@ class ConnectAdminBot:
         self.dp.message.register(self.user_create, Command("user_create"))
         self.dp.message.register(self.user_delete, Command("user_delete"))
         self.dp.message.register(self.incident_status_cmd, Command("incident_status"))
+        self.dp.message.register(self.propose_cmd, Command("propose"))
+        self.dp.message.register(self.agent_cmd, Command("agent"))
         self.dp.message.register(self.approve_cmd, Command("approve"))
         self.dp.message.register(self.deny_cmd, Command("deny"))
         self.dp.message.register(self.retry_cmd, Command("retry"))
@@ -84,10 +86,63 @@ class ConnectAdminBot:
             "/user_create <username> [display_name]\n"
             "/user_delete <username>\n"
             "/incident_status <incident_id>\n"
+            "/propose <incident_id>\n"
+            "/agent <incident_id> <message>\n"
             "/approve <incident_id> [pr_number]\n"
             "/deny <incident_id>\n"
             "/retry <incident_id>"
         )
+
+    async def propose_cmd(self, message: Message) -> None:
+        if not await self._guard(message):
+            return
+        parts = (message.text or "").split()
+        if len(parts) < 2:
+            await message.answer("Usage: /propose <incident_id>")
+            return
+        incident = self.store.get(parts[1])
+        if not incident:
+            await message.answer("Incident not found")
+            return
+        incident.status = "plan_requested"
+        self._mark_decision(
+            incident,
+            action="propose_fix",
+            by_id=message.from_user.id if message.from_user else 0,
+            by_username=message.from_user.username if message.from_user else "",
+        )
+        await self._dispatch_incident_handler(incident, action="propose_fix", user_note="")
+        await message.answer(f"Proposal requested for incident {incident.incident_id}")
+
+    async def agent_cmd(self, message: Message) -> None:
+        if not await self._guard(message):
+            return
+        parts = (message.text or "").split(maxsplit=2)
+        if len(parts) < 3:
+            await message.answer("Usage: /agent <incident_id> <message>")
+            return
+        incident_id = parts[1]
+        user_note = parts[2].strip()
+        if not user_note:
+            await message.answer("Message is empty")
+            return
+        incident = self.store.get(incident_id)
+        if not incident:
+            await message.answer("Incident not found")
+            return
+        dialog = incident.context.get("dialog", [])
+        dialog.append(
+            {
+                "role": "admin",
+                "message": user_note,
+                "at": datetime.now(timezone.utc).isoformat(),
+            }
+        )
+        incident.context["dialog"] = dialog[-20:]
+        incident.status = "plan_iterating"
+        self.store.save(incident)
+        await self._dispatch_incident_handler(incident, action="propose_fix", user_note=user_note)
+        await message.answer(f"Agent iteration requested for incident {incident.incident_id}")
 
     async def incident_status_cmd(self, message: Message) -> None:
         if not await self._guard(message):
@@ -289,12 +344,12 @@ class ConnectAdminBot:
                 if not incident:
                     await callback.answer("Incident not found", show_alert=True)
                     return
-                self._mark_decision(incident, action="approve", by_id=callback.from_user.id, by_username=callback.from_user.username or "")
-                incident.status = "approved"
+                self._mark_decision(incident, action="propose_fix", by_id=callback.from_user.id, by_username=callback.from_user.username or "")
+                incident.status = "plan_requested"
                 self.store.save(incident)
-                await self._dispatch_incident_handler(incident, action="propose_fix")
-                await callback.message.answer(f"Approved incident {incident.incident_id}, propose_fix dispatched")
-                await callback.answer("Approved")
+                await self._dispatch_incident_handler(incident, action="propose_fix", user_note="")
+                await callback.message.answer(f"Plan proposal requested for incident {incident.incident_id}")
+                await callback.answer("Proposal requested")
                 return
             await callback.answer("Unsupported action", show_alert=True)
         except Exception as exc:  # noqa: BLE001
@@ -308,18 +363,22 @@ class ConnectAdminBot:
             return
         if pr_number:
             incident.pr_number = pr_number
-        incident.status = "approved"
+        decision_action = "approve" if pr_number else "create_dev_pr"
         self._mark_decision(
             incident,
-            action="approve",
+            action=decision_action,
             by_id=message.from_user.id if message.from_user else 0,
             by_username=message.from_user.username if message.from_user else "",
             pr_number=pr_number,
         )
-        action = "approve" if pr_number else "propose_fix"
-        await self._dispatch_incident_handler(incident, action=action)
+        if pr_number:
+            incident.status = "approved"
+        else:
+            incident.status = "dev_pr_requested"
+        self.store.save(incident)
+        await self._dispatch_incident_handler(incident, action=decision_action, user_note="")
         await message.answer(
-            f"Approved incident {incident.incident_id}, handler workflow dispatched (action={action})"
+            f"Approved incident {incident.incident_id}, handler workflow dispatched (action={decision_action})"
         )
 
     async def _run_or_incident(self, message: Message, operation: str, fn, risky: bool = False) -> None:
@@ -353,7 +412,7 @@ class ConnectAdminBot:
                     f"Operation failed: {operation}\n"
                     f"incident_id={incident.incident_id}\n"
                     f"reason={incident.summary}\n"
-                    f"Use /retry {incident.incident_id} or /approve {incident.incident_id}",
+                    f"Use /retry {incident.incident_id} or /propose {incident.incident_id}",
                     reply_markup=self._incident_keyboard(incident.incident_id),
                 )
 
@@ -432,7 +491,7 @@ class ConnectAdminBot:
                     f"run={incident.workflow_url}\n"
                     f"job={job_url or '-'}\n"
                     f"summary={incident.summary}\n"
-                    f"Use /retry {incident.incident_id}"
+                    f"Use /retry {incident.incident_id} or /propose {incident.incident_id}"
                 ),
                 reply_markup=self._incident_keyboard(incident.incident_id),
             )
@@ -452,7 +511,7 @@ class ConnectAdminBot:
             inputs={"old_worker_name": settings.worker_replace_old_node_name},
         )
 
-    async def _dispatch_incident_handler(self, incident: Incident, action: str) -> None:
+    async def _dispatch_incident_handler(self, incident: Incident, action: str, user_note: str = "") -> None:
         inputs = {
             "incident_id": incident.incident_id,
             "action": action,
@@ -460,6 +519,7 @@ class ConnectAdminBot:
             "run_id": str(incident.run_id or ""),
             "pr_number": str(incident.pr_number or ""),
             "summary": incident.summary,
+            "user_note": user_note,
         }
         if self.gh is None:
             raise RuntimeError("GitHub integration is not configured for incident handler")
@@ -499,7 +559,7 @@ class ConnectAdminBot:
             inline_keyboard=[
                 [
                     InlineKeyboardButton(text="Retry", callback_data=f"incident:retry:{incident_id}"),
-                    InlineKeyboardButton(text="Propose Fix PR", callback_data=f"incident:propose:{incident_id}"),
+                    InlineKeyboardButton(text="Propose Plan", callback_data=f"incident:propose:{incident_id}"),
                     InlineKeyboardButton(text="Deny", callback_data=f"incident:deny:{incident_id}"),
                 ]
             ]

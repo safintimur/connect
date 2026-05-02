@@ -1,4 +1,4 @@
-name: Incident Handler
+name: Incident Control
 
 on:
   workflow_dispatch:
@@ -7,7 +7,7 @@ on:
         description: "Incident id from bot"
         required: true
       action:
-        description: "approve|retry|propose_fix"
+        description: "approve|retry|propose_fix|create_dev_pr"
         required: true
       operation:
         description: "Operation name"
@@ -23,6 +23,10 @@ on:
         default: ""
       summary:
         description: "Optional short summary"
+        required: false
+        default: ""
+      user_note:
+        description: "Optional user note for iterative agent loop"
         required: false
         default: ""
 
@@ -47,10 +51,12 @@ jobs:
             const prRaw = `${{ toJson(github.event.inputs.pr_number) }}`.replace(/"/g, '');
             const operation = `${{ toJson(github.event.inputs.operation) }}`.replace(/"/g, '');
             const summary = `${{ toJson(github.event.inputs.summary) }}`.replace(/"/g, '');
+            const userNote = `${{ toJson(github.event.inputs.user_note) }}`.replace(/"/g, '');
             core.setOutput('action', action);
             core.setOutput('incident_id', incidentId);
             core.setOutput('operation', operation);
             core.setOutput('summary', summary);
+            core.setOutput('user_note', userNote);
 
             core.info(`incident=${incidentId} action=${action} run_id=${runIdRaw} pr=${prRaw}`)
 
@@ -120,6 +126,42 @@ jobs:
                 merge_method: 'squash',
               });
               core.info(`Merged PR ${pull_number}`);
+              if (pr.data.base && pr.data.base.ref === 'dev') {
+                const title = `promote: incident ${incidentId} dev->main`;
+                const body = [
+                  `Incident ${incidentId} promotion PR.`,
+                  `Source incident PR: #${pull_number}`,
+                  'Approve this PR after checks with:',
+                  `/approve ${incidentId} <pr_number>`,
+                ].join('\n');
+                const existing = await github.rest.pulls.list({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  state: 'open',
+                  head: `${context.repo.owner}:dev`,
+                  base: 'main',
+                  per_page: 20,
+                });
+                let promotePr;
+                if ((existing.data || []).length > 0) {
+                  promotePr = existing.data[0];
+                  core.info(`Reusing existing dev->main PR #${promotePr.number}`);
+                } else {
+                  const created = await github.rest.pulls.create({
+                    owner: context.repo.owner,
+                    repo: context.repo.repo,
+                    title,
+                    body,
+                    head: 'dev',
+                    base: 'main',
+                    draft: false,
+                  });
+                  promotePr = created.data;
+                  core.info(`Created dev->main PR #${promotePr.number}`);
+                }
+                core.setOutput('promotion_pr_number', String(promotePr.number));
+                core.setOutput('promotion_pr_url', String(promotePr.html_url || ''));
+              }
               if (runIdRaw) {
                 const run_id = Number(runIdRaw);
                 try {
@@ -154,9 +196,31 @@ jobs:
                   operation: operation,
                   run_id: runIdRaw || '',
                   summary: summary || '',
+                  user_note: userNote || '',
+                  create_pr: 'false',
                 }
               });
               core.info('incident-auto-fix dispatched');
+              return;
+            }
+
+            if (action === 'create_dev_pr') {
+              core.info('Dispatching incident-auto-fix workflow (create_dev_pr=true)');
+              await github.rest.actions.createWorkflowDispatch({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                workflow_id: 'incident-auto-fix.yml',
+                ref: 'main',
+                inputs: {
+                  incident_id: incidentId,
+                  operation: operation,
+                  run_id: runIdRaw || '',
+                  summary: summary || '',
+                  user_note: userNote || '',
+                  create_pr: 'true',
+                }
+              });
+              core.info('incident-auto-fix dispatched (create_dev_pr=true)');
               return;
             }
 
@@ -171,6 +235,9 @@ jobs:
           ACTION_NAME: ${{ steps.handle_action.outputs.action }}
           OPERATION: ${{ steps.handle_action.outputs.operation }}
           SUMMARY: ${{ steps.handle_action.outputs.summary }}
+          USER_NOTE: ${{ steps.handle_action.outputs.user_note }}
+          PROMOTION_PR_NUMBER: ${{ steps.handle_action.outputs.promotion_pr_number }}
+          PROMOTION_PR_URL: ${{ steps.handle_action.outputs.promotion_pr_url }}
           RUN_URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
           JOB_STATUS: ${{ job.status }}
         run: |
@@ -196,6 +263,12 @@ jobs:
             exit 0
           fi
           TEXT="incident-handler: incident_id=${INCIDENT_ID}%0Aaction=${ACTION_NAME}%0Aoperation=${OPERATION}%0Astatus=${JOB_STATUS}%0Asummary=${SUMMARY:-n/a}%0Arun=${RUN_URL}"
+          if [ -n "${USER_NOTE}" ]; then
+            TEXT="${TEXT}%0Auser_note=${USER_NOTE}"
+          fi
+          if [ -n "${PROMOTION_PR_NUMBER}" ]; then
+            TEXT="${TEXT}%0Apromote_pr=${PROMOTION_PR_URL}%0Aapprove_main: /approve ${INCIDENT_ID} ${PROMOTION_PR_NUMBER}"
+          fi
           curl -fsS -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
             -d "chat_id=${CHAT_ID}" \
             -d "text=${TEXT}" >/dev/null
