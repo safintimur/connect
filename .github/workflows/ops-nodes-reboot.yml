@@ -77,3 +77,10 @@ jobs:
           ANSIBLE_HOST_KEY_CHECKING: "False"
         run: |
           ansible all -i infra/ansible/inventory.generated.ini -m wait_for_connection -a "timeout=900"
+
+      - name: Refresh control DB node metadata
+        env:
+          ANSIBLE_HOST_KEY_CHECKING: "False"
+        run: |
+          ansible-playbook -i infra/ansible/inventory.generated.ini infra/ansible/playbooks/deploy_control.yml
+          make sync-nodes

@@ -113,3 +113,28 @@ jobs:
           TF_BACKEND_CONFIG_FILE: backend.hcl
         run: |
           make control-bootstrap
+
+      - name: Sync worker node metadata from DigitalOcean (if exists)
+        env:
+          ANSIBLE_HOST_KEY_CHECKING: "False"
+          DIGITALOCEAN_TOKEN: ${{ secrets.DIGITALOCEAN_TOKEN }}
+        run: |
+          set -euo pipefail
+          WORKER_JSON="$(curl -fsS -H "Authorization: Bearer ${DIGITALOCEAN_TOKEN}" "https://api.digitalocean.com/v2/droplets?per_page=200" \
+            | jq -c --arg NAME "${WORKER_NODE_NAME}" '.droplets[]? | select(.name==$NAME) | {id, name, ip: ([.networks.v4[]? | select(.type=="public") | .ip_address][0] // ""), status} ' \
+            | head -n1)"
+
+          if [ -z "${WORKER_JSON}" ]; then
+            echo "Worker ${WORKER_NODE_NAME} not found in DigitalOcean. Skip worker DB sync."
+            exit 0
+          fi
+
+          WORKER_ID="$(echo "${WORKER_JSON}" | jq -r '.id | tostring')"
+          WORKER_IP="$(echo "${WORKER_JSON}" | jq -r '.ip')"
+          WORKER_STATUS="$(echo "${WORKER_JSON}" | jq -r '.status')"
+          if [ "${WORKER_STATUS}" != "active" ] || [ -z "${WORKER_IP}" ]; then
+            echo "Worker found but not active/public-ip-ready. status=${WORKER_STATUS} ip=${WORKER_IP:-none}. Skip worker DB sync."
+            exit 0
+          fi
+
+          ansible control -i infra/ansible/inventory.generated.ini -m shell -a "docker compose --env-file /opt/connect/.env -f /opt/connect/control/docker-compose.yml -p connect-control exec -T control-api connectctl node-upsert ${WORKER_NODE_NAME} --role worker --country gb --provider digitalocean --provider-node-id ${WORKER_ID} --public-ip ${WORKER_IP} --actor automation"

@@ -71,10 +71,12 @@ jobs:
       - name: Refresh inventory from state
         env:
           TF_BACKEND_CONFIG_FILE: backend.hcl
+          ANSIBLE_HOST_KEY_CHECKING: "False"
         run: |
           make tf-init
           make tf-apply
           make render-inventory
+          make sync-nodes
 
       - name: Collect control logs now
         env:
