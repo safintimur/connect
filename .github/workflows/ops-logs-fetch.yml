@@ -117,35 +117,111 @@ jobs:
       - name: Telegram alert on errors
         if: always() && env.TELEGRAM_BOT_TOKEN != '' && env.TELEGRAM_ADMIN_IDS != ''
         run: |
-          if [ ! -f logs/summary.txt ]; then
-            CONTROL_ERR="n/a"
-            WORKER_ERR="n/a"
-          else
-            CONTROL_ERR="$(awk -F= '/^control_errors=/{print $2}' logs/summary.txt)"
-            WORKER_ERR="$(awk -F= '/^worker_errors=/{print $2}' logs/summary.txt)"
-            if [ "${CONTROL_ERR}" = "0" ] && [ "${WORKER_ERR}" = "0" ]; then
-              exit 0
-            fi
-          fi
-          CHAT_ID=$(python - <<'PY'
-          import json, os
-          raw=(os.getenv("TELEGRAM_ADMIN_IDS","") or "").strip()
-          try:
-              if raw.startswith("["):
-                  arr = json.loads(raw)
-                  if arr:
-                      print(str(arr[0]))
-                      raise SystemExit
+          python - <<'PY'
+          from __future__ import annotations
+
+          import json
+          import os
+          import re
+          import urllib.parse
+          import urllib.request
+          from pathlib import Path
+
+          def parse_admin_id(raw: str) -> str:
+              raw = (raw or "").strip()
+              if not raw:
+                  return ""
+              try:
+                  if raw.startswith("["):
+                      arr = json.loads(raw)
+                      if arr:
+                          return str(arr[0]).strip()
+              except Exception:
+                  pass
               if "," in raw:
-                  print(raw.split(",")[0].strip())
-                  raise SystemExit
-          except Exception:
-              pass
-          print(raw)
-          PY
+                  return raw.split(",")[0].strip()
+              return raw
+
+          def parse_summary(path: Path) -> tuple[str, str]:
+              if not path.exists():
+                  return "n/a", "n/a"
+              data: dict[str, str] = {}
+              for line in path.read_text(encoding="utf-8", errors="ignore").splitlines():
+                  if "=" in line:
+                      k, v = line.split("=", 1)
+                      data[k.strip()] = v.strip()
+              return data.get("control_errors", "n/a"), data.get("worker_errors", "n/a")
+
+          def error_excerpt(paths: list[Path], limit: int = 6) -> str:
+              pattern = re.compile(r"(error|traceback|exception|failed)", re.IGNORECASE)
+              rows: list[str] = []
+              for path in paths:
+                  if not path.exists():
+                      continue
+                  for raw in path.read_text(encoding="utf-8", errors="ignore").splitlines():
+                      line = raw.strip()
+                      if not line:
+                          continue
+                      if pattern.search(line):
+                          rows.append(f"{path.name}: {line}")
+                          if len(rows) >= limit:
+                              return "\n".join(rows)
+              return ""
+
+          bot_token = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
+          chat_id = parse_admin_id(os.getenv("TELEGRAM_ADMIN_IDS", ""))
+          if not bot_token or not chat_id:
+              raise SystemExit(0)
+
+          event_name = os.getenv("GITHUB_EVENT_NAME", "")
+          run_url = f"https://github.com/{os.getenv('GITHUB_REPOSITORY')}/actions/runs/{os.getenv('GITHUB_RUN_ID')}"
+          control_err, worker_err = parse_summary(Path("logs/summary.txt"))
+          has_errors = (control_err != "0" or worker_err != "0")
+
+          if has_errors:
+              title = "connect log alert"
+              body = "Обнаружены ошибки, см. excerpt ниже."
+          elif event_name == "schedule":
+              title = "connect log ok (scheduled)"
+              body = "Плановая проверка: ошибок не найдено."
+          else:
+              title = "connect log ok (manual)"
+              body = "Ручная проверка: ошибок не найдено."
+
+          text = [
+              title,
+              body,
+              f"control_errors={control_err}",
+              f"worker_errors={worker_err}",
+              f"run={run_url}",
+          ]
+
+          if has_errors:
+              excerpt = error_excerpt(
+                  [
+                      Path("logs/control-compose.log"),
+                      Path("logs/worker-xray-status.log"),
+                      Path("logs/worker-xray-journal.log"),
+                  ]
+              )
+              if excerpt:
+                  text.append("")
+                  text.append("excerpt:")
+                  text.append(excerpt[:2500])
+
+          payload = urllib.parse.urlencode(
+              {
+                  "chat_id": chat_id,
+                  "text": "\n".join(text),
+                  "disable_web_page_preview": "true",
+              }
+          ).encode("utf-8")
+          req = urllib.request.Request(
+              f"https://api.telegram.org/bot{bot_token}/sendMessage",
+              data=payload,
+              method="POST",
           )
-          [ -z "$CHAT_ID" ] && exit 0
-          TEXT="connect log alert%0Acontrol_errors=${CONTROL_ERR}%0Aworker_errors=${WORKER_ERR}%0Arun=https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
-          curl -fsS -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
-            -d "chat_id=${CHAT_ID}" \
-            -d "text=${TEXT}" >/dev/null
+          with urllib.request.urlopen(req, timeout=20) as resp:
+              if resp.status >= 400:
+                  raise RuntimeError(f"telegram send failed with status {resp.status}")
+          PY
