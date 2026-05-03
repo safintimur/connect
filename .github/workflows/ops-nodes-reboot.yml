@@ -82,5 +82,4 @@ jobs:
         env:
           ANSIBLE_HOST_KEY_CHECKING: "False"
         run: |
-          ansible-playbook -i infra/ansible/inventory.generated.ini infra/ansible/playbooks/deploy_control.yml
           make sync-nodes
