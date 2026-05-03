@@ -45,11 +45,15 @@ class ConnectAdminBot:
         self.store = IncidentStore(settings.incident_store_dir)
         self.lock = asyncio.Lock()
         self.pending: dict[int, PendingAction] = {}
+        self.health_task: asyncio.Task | None = None
+        self.health_started_at: datetime | None = None
+        self.health_status: str = "idle"
 
         self.dp.message.register(self.help_cmd, Command("start"))
         self.dp.message.register(self.help_cmd, Command("help"))
         self.dp.message.register(self.nodes_reboot, Command("nodes_reboot"))
         self.dp.message.register(self.worker_replace, Command("worker_replace"))
+        self.dp.message.register(self.logs_fetch, Command("logs"))
         self.dp.message.register(self.health, Command("health"))
         self.dp.message.register(self.user_create, Command("user_create"))
         self.dp.message.register(self.user_delete, Command("user_delete"))
@@ -82,6 +86,7 @@ class ConnectAdminBot:
             "Commands:\n"
             "/nodes_reboot\n"
             "/worker_replace\n"
+            "/logs [lines]\n"
             "/health\n"
             "/user_create <username> [display_name]\n"
             "/user_delete <username>\n"
@@ -190,8 +195,35 @@ class ConnectAdminBot:
     async def health(self, message: Message) -> None:
         if not await self._guard(message):
             return
-        result = health_report(settings.telegram_ssh_key_path)
-        await message.answer(format_health(result))
+        if self.health_task and not self.health_task.done():
+            elapsed = 0
+            if self.health_started_at:
+                elapsed = int((datetime.now(timezone.utc) - self.health_started_at).total_seconds())
+            await message.answer(f"Health check already running ({elapsed}s)\nstatus: {self.health_status}")
+            return
+
+        self.health_started_at = datetime.now(timezone.utc)
+        self.health_status = "queued"
+        await message.answer("Running health check...")
+        self.health_task = asyncio.create_task(self._run_health_check(chat_id=message.chat.id))
+
+    async def logs_fetch(self, message: Message) -> None:
+        if not await self._guard(message):
+            return
+        parts = (message.text or "").split()
+        lines = "300"
+        if len(parts) > 1:
+            if not parts[1].isdigit():
+                await message.answer("Usage: /logs [lines]")
+                return
+            lines = parts[1]
+
+        await self._run_or_incident(
+            message,
+            operation="logs_fetch",
+            fn=lambda: self._op_logs_fetch(lines=lines),
+            risky=False,
+        )
 
     async def user_create(self, message: Message) -> None:
         if not await self._guard(message):
@@ -202,11 +234,20 @@ class ConnectAdminBot:
             return
         username = parts[1]
         display_name = " ".join(parts[2:]) if len(parts) > 2 else username.lstrip("@")
-        result = create_or_recreate_user(username=username, display_name=display_name, actor="bot")
-        if result.ok:
-            await message.answer(f"{result.message}\nSubscription: {result.details.get('subscription_url', '-')}")
-        else:
-            await message.answer(result.message)
+        try:
+            result = create_or_recreate_user(username=username, display_name=display_name, actor="bot")
+            if result.ok:
+                await message.answer(f"{result.message}\nSubscription: {result.details.get('subscription_url', '-')}")
+            else:
+                await message.answer(result.message)
+        except Exception as exc:  # noqa: BLE001
+            await self._notify_command_incident(
+                chat_id=message.chat.id,
+                operation="user_create",
+                stage="runtime",
+                error=str(exc),
+                context={"username": username},
+            )
 
     async def user_delete(self, message: Message) -> None:
         if not await self._guard(message):
@@ -216,8 +257,17 @@ class ConnectAdminBot:
             await message.answer("Usage: /user_delete <username>")
             return
         username = parts[1]
-        result = delete_user_cascade(username=username, actor="bot")
-        await message.answer(result.message)
+        try:
+            result = delete_user_cascade(username=username, actor="bot")
+            await message.answer(result.message)
+        except Exception as exc:  # noqa: BLE001
+            await self._notify_command_incident(
+                chat_id=message.chat.id,
+                operation="user_delete",
+                stage="runtime",
+                error=str(exc),
+                context={"username": username},
+            )
 
     async def approve_cmd(self, message: Message) -> None:
         if not await self._guard(message):
@@ -509,6 +559,80 @@ class ConnectAdminBot:
             self.gh,
             workflow_file="ops-worker-bluegreen.yml",
             inputs={"old_worker_name": settings.worker_replace_old_node_name},
+        )
+
+    async def _op_logs_fetch(self, lines: str = "300") -> int:
+        return await dispatch_workflow_and_pick_run(
+            self.gh,
+            workflow_file="ops-logs-fetch.yml",
+            inputs={"lines": lines, "include_worker_journal": "true"},
+        )
+
+    async def _run_health_check(self, chat_id: int) -> None:
+        def _progress(status: str) -> None:
+            self.health_status = status
+
+        self.health_status = "starting"
+        try:
+            result = await asyncio.wait_for(
+                asyncio.to_thread(health_report, settings.telegram_ssh_key_path, _progress),
+                timeout=120,
+            )
+            await self.bot.send_message(chat_id, format_health(result))
+        except TimeoutError:
+            await self._notify_command_incident(
+                chat_id=chat_id,
+                operation="health",
+                stage="timeout",
+                error=f"Health check timeout (>120s), status={self.health_status}",
+                context={"status": self.health_status},
+            )
+        except Exception as exc:  # noqa: BLE001
+            await self._notify_command_incident(
+                chat_id=chat_id,
+                operation="health",
+                stage="runtime",
+                error=str(exc),
+                context={"status": self.health_status},
+            )
+        finally:
+            self.health_status = "idle"
+            self.health_started_at = None
+            self.health_task = None
+
+    async def _notify_command_incident(
+        self,
+        chat_id: int,
+        operation: str,
+        stage: str,
+        error: str,
+        context: dict | None = None,
+    ) -> None:
+        incident = self.store.create(
+            operation=operation,
+            stage=stage,
+            summary=error,
+            context=context or {},
+        )
+        bundle = build_incident_bundle(
+            incident_id=incident.incident_id,
+            operation=operation,
+            stage=stage,
+            error=error,
+            extra=context or {},
+        )
+        incident.context["bundle"] = bundle
+        self.store.save(incident)
+        await self.bot.send_message(
+            chat_id,
+            (
+                f"Operation failed: {operation}\n"
+                f"incident_id={incident.incident_id}\n"
+                f"stage={stage}\n"
+                f"reason={error}\n"
+                f"Use /retry {incident.incident_id} or /propose {incident.incident_id}"
+            ),
+            reply_markup=self._incident_keyboard(incident.incident_id),
         )
 
     async def _dispatch_incident_handler(self, incident: Incident, action: str, user_note: str = "") -> None:

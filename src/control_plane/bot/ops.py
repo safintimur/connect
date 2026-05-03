@@ -6,6 +6,7 @@ import shlex
 import socket
 import subprocess
 from dataclasses import dataclass
+from typing import Callable
 
 from sqlalchemy import select
 
@@ -109,21 +110,38 @@ async def dispatch_workflow_and_pick_run(gh, workflow_file: str, inputs: dict | 
     return int(runs[0]["id"])
 
 
-def health_report(ssh_key_path: str = "") -> OperationResult:
+def health_report(ssh_key_path: str = "", progress_cb: Callable[[str], None] | None = None) -> OperationResult:
+    if progress_cb:
+        progress_cb("loading nodes from control DB")
     with session_scope() as session:
-        nodes = list(session.scalars(select(Node).where(Node.role.in_([NodeRole.control, NodeRole.worker]))))
+        rows = list(session.scalars(select(Node).where(Node.role.in_([NodeRole.control, NodeRole.worker]))))
+        nodes = [
+            {
+                "name": row.name,
+                "role": row.role,
+                "status": row.status,
+                "public_ip": row.public_ip or "",
+            }
+            for row in rows
+        ]
 
     if not nodes:
         return OperationResult(False, "No nodes in DB")
 
+    if progress_cb:
+        progress_cb(f"loaded {len(nodes)} node(s), starting connectivity checks")
+
     report = []
     degraded = 0
-    for node in nodes:
+    total = len(nodes)
+    for idx, node in enumerate(nodes, start=1):
+        if progress_cb:
+            progress_cb(f"checking node {idx}/{total}: {node['name']} ({node['role'].value})")
         node_data = {
-            "name": node.name,
-            "role": node.role.value,
-            "status": node.status.value,
-            "public_ip": node.public_ip or "",
+            "name": node["name"],
+            "role": node["role"].value,
+            "status": node["status"].value,
+            "public_ip": node["public_ip"],
             "tcp_22": "unknown",
             "tcp_443": "unknown",
             "cpu_load": "unknown",
@@ -134,16 +152,20 @@ def health_report(ssh_key_path: str = "") -> OperationResult:
             "services": "unknown",
         }
 
-        if node.public_ip:
+        if node["public_ip"]:
+            if progress_cb:
+                progress_cb(f"{node['name']}: tcp reachability checks")
             for port in (22, 443):
-                ok = _tcp_check(node.public_ip, port)
+                ok = _tcp_check(node["public_ip"], port)
                 node_data[f"tcp_{port}"] = "ok" if ok else "fail"
 
             if ssh_key_path:
-                metrics = _ssh_metrics(node.public_ip, ssh_key_path)
+                if progress_cb:
+                    progress_cb(f"{node['name']}: collecting ssh metrics")
+                metrics = _ssh_metrics(node["public_ip"], ssh_key_path)
                 node_data.update(metrics)
 
-        if node_data["tcp_22"] == "fail" or (node.role == NodeRole.worker and node_data["tcp_443"] == "fail"):
+        if node_data["tcp_22"] == "fail" or (node["role"] == NodeRole.worker and node_data["tcp_443"] == "fail"):
             degraded += 1
 
         report.append(node_data)
@@ -151,6 +173,8 @@ def health_report(ssh_key_path: str = "") -> OperationResult:
     summary = "All nodes look healthy"
     if degraded:
         summary = f"Detected {degraded} degraded node(s). Check SSH/VLESS reachability first."
+    if progress_cb:
+        progress_cb("finalizing report")
 
     return OperationResult(True, summary, {"nodes": report})
 

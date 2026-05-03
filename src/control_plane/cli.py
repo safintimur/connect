@@ -36,15 +36,19 @@ def user_add(
 ) -> None:
     with session_scope() as session:
         user = create_user_with_identity(session, username=username, display_name=display_name, actor=actor)
-    typer.echo(f"User created: {user.username} ({user.id})")
-    typer.echo(f"Connect UUID: {user.connect_uuid}")
+        user_username = user.username
+        user_id = user.id
+        user_connect_uuid = user.connect_uuid
+    typer.echo(f"User created: {user_username} ({user_id})")
+    typer.echo(f"Connect UUID: {user_connect_uuid}")
 
 
 @app.command("user-disable")
 def user_disable(username: str, actor: str = typer.Option("admin")) -> None:
     with session_scope() as session:
         user = disable_user_by_username(session, username=username, actor=actor)
-    typer.echo(f"User disabled: {user.username}")
+        user_username = user.username
+    typer.echo(f"User disabled: {user_username}")
 
 
 @app.command("user-delete")

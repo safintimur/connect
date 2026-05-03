@@ -168,6 +168,18 @@ jobs:
                               return "\n".join(rows)
               return ""
 
+          def fallback_excerpt(paths: list[Path], tail_lines: int = 3) -> str:
+              rows: list[str] = []
+              for path in paths:
+                  if not path.exists():
+                      continue
+                  lines = [x.strip() for x in path.read_text(encoding="utf-8", errors="ignore").splitlines() if x.strip()]
+                  if not lines:
+                      continue
+                  rows.append(f"{path.name}:")
+                  rows.extend(lines[-tail_lines:])
+              return "\n".join(rows)
+
           bot_token = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
           chat_id = parse_admin_id(os.getenv("TELEGRAM_ADMIN_IDS", ""))
           if not bot_token or not chat_id:
@@ -204,6 +216,14 @@ jobs:
                       Path("logs/worker-xray-journal.log"),
                   ]
               )
+              if not excerpt:
+                  excerpt = fallback_excerpt(
+                      [
+                          Path("logs/control-compose.log"),
+                          Path("logs/worker-xray-status.log"),
+                          Path("logs/worker-xray-journal.log"),
+                      ]
+                  )
               if excerpt:
                   text.append("")
                   text.append("excerpt:")
