@@ -69,6 +69,7 @@ resource "digitalocean_firewall" "worker_uk" {
     protocol         = "tcp"
     port_range       = "22"
     source_addresses = var.allowed_admin_cidrs
+    source_tags      = ["role:control"]
   }
 
   inbound_rule {
